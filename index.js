@@ -56,14 +56,14 @@ async function getAccessToken() {
 }
 
 /**
- * Calculate appointment time window
- * - monthsOut: 6 or 12
+ * Calculate appointment window
+ * - Always 6 months out
  * - Tuesday–Thursday only
  * - 9am–10am
  */
-function calculateAppointmentWindow(monthsOut) {
+function calculateAppointmentWindow() {
   const date = new Date();
-  date.setMonth(date.getMonth() + monthsOut);
+  date.setMonth(date.getMonth() + 6);
 
   while (![2, 3, 4].includes(date.getDay())) {
     date.setDate(date.getDate() + 1);
@@ -107,17 +107,13 @@ async function createAppointment(token, payload) {
 
 /**
  * MAIN ENDPOINT
+ * Creates ONE 6-month advance appointment
  */
-app.post("/create-advance-appointments", async (req, res) => {
+app.post("/create-advance-appointment", async (req, res) => {
   try {
-    const { shopId, customerId, vehicleId, appointments } = req.body;
+    const { shopId, customerId, vehicleId } = req.body;
 
-    if (
-      !shopId ||
-      !customerId ||
-      !vehicleId ||
-      !Array.isArray(appointments)
-    ) {
+    if (!shopId || !customerId || !vehicleId) {
       return res.status(400).json({
         success: false,
         message: "Invalid request payload"
@@ -125,37 +121,24 @@ app.post("/create-advance-appointments", async (req, res) => {
     }
 
     const token = await getAccessToken();
-    const created = [];
+    const { startTime, endTime } = calculateAppointmentWindow();
 
-    for (const appt of appointments) {
-      if (![6, 12].includes(appt.monthsOut)) continue;
+    const payload = {
+      shopId,
+      customerId,
+      vehicleId,
+      startTime,
+      endTime,
+      title: "6 Month Advance Appointment",
+      description:
+        "Advance follow-up appointment scheduled at time of vehicle checkout."
+    };
 
-      const { startTime, endTime } =
-        calculateAppointmentWindow(appt.monthsOut);
-
-      const title =
-        appt.monthsOut === 6
-          ? "6 Month Advance Appointment"
-          : "12 Month Advance Appointment";
-
-      const payload = {
-        shopId,
-        customerId,
-        vehicleId,
-        startTime,
-        endTime,
-        title,
-        description:
-          "Advance follow-up appointment scheduled at time of vehicle checkout."
-      };
-
-      const result = await createAppointment(token, payload);
-      created.push(result.data);
-    }
+    const result = await createAppointment(token, payload);
 
     res.json({
       success: true,
-      appointments: created
+      appointmentId: result.data
     });
   } catch (err) {
     console.error(err);
@@ -163,37 +146,6 @@ app.post("/create-advance-appointments", async (req, res) => {
       success: false,
       message: err.message
     });
-  }
-});
-
-/**
- * DEBUG ENDPOINT — FETCH REPAIR ORDER
- * TEMPORARY
- */
-app.get("/debug/repair-order/:id", async (req, res) => {
-  try {
-    const token = await getAccessToken();
-    const roId = req.params.id;
-
-    const response = await fetch(
-      `${TEKMETRIC_BASE_URL}/api/v1/repair-orders/${roId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      }
-    );
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text);
-    }
-
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
   }
 });
 
