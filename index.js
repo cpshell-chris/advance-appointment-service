@@ -15,15 +15,11 @@ if (!TEKMETRIC_CLIENT_ID || !TEKMETRIC_CLIENT_SECRET || !TEKMETRIC_BASE_URL) {
 }
 
 /**
- * In-memory token cache
- * Cloud Run instances are ephemeral, this is fine for v1
+ * In-memory OAuth token cache
  */
 let cachedToken = null;
 let tokenExpiresAt = 0;
 
-/**
- * Get Tekmetric OAuth token
- */
 async function getAccessToken() {
   const now = Date.now();
 
@@ -40,7 +36,7 @@ async function getAccessToken() {
     {
       method: "POST",
       headers: {
-        "Authorization": `Basic ${auth}`,
+        Authorization: `Basic ${auth}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
       body: "grant_type=client_credentials"
@@ -53,24 +49,22 @@ async function getAccessToken() {
   }
 
   const data = await response.json();
-
   cachedToken = data.access_token;
-  tokenExpiresAt = now + (55 * 60 * 1000); // 55 minutes
+  tokenExpiresAt = now + 55 * 60 * 1000;
 
   return cachedToken;
 }
 
 /**
- * Calculate appointment date:
- * - monthsOut (6 or 12)
- * - force Tue–Thu
- * - default 9–10am local shop time (no TZ conversion in v1)
+ * Calculate appointment time window
+ * - monthsOut: 6 or 12
+ * - Tuesday–Thursday only
+ * - 9am–10am
  */
 function calculateAppointmentWindow(monthsOut) {
   const date = new Date();
   date.setMonth(date.getMonth() + monthsOut);
 
-  // Force Tuesday–Thursday
   while (![2, 3, 4].includes(date.getDay())) {
     date.setDate(date.getDate() + 1);
   }
@@ -96,7 +90,7 @@ async function createAppointment(token, payload) {
     {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify(payload)
@@ -112,16 +106,11 @@ async function createAppointment(token, payload) {
 }
 
 /**
- * Main handler
+ * MAIN ENDPOINT
  */
 app.post("/create-advance-appointments", async (req, res) => {
   try {
-    const {
-      shopId,
-      customerId,
-      vehicleId,
-      appointments
-    } = req.body;
+    const { shopId, customerId, vehicleId, appointments } = req.body;
 
     if (
       !shopId ||
@@ -136,20 +125,16 @@ app.post("/create-advance-appointments", async (req, res) => {
     }
 
     const token = await getAccessToken();
-    const createdAppointments = [];
+    const created = [];
 
     for (const appt of appointments) {
-      const { monthsOut } = appt;
-
-      if (![6, 12].includes(monthsOut)) {
-        continue;
-      }
+      if (![6, 12].includes(appt.monthsOut)) continue;
 
       const { startTime, endTime } =
-        calculateAppointmentWindow(monthsOut);
+        calculateAppointmentWindow(appt.monthsOut);
 
       const title =
-        monthsOut === 6
+        appt.monthsOut === 6
           ? "6 Month Advance Appointment"
           : "12 Month Advance Appointment";
 
@@ -165,24 +150,55 @@ app.post("/create-advance-appointments", async (req, res) => {
       };
 
       const result = await createAppointment(token, payload);
-      createdAppointments.push(result.data);
+      created.push(result.data);
     }
 
-    return res.json({
+    res.json({
       success: true,
-      appointments: createdAppointments
+      appointments: created
     });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
       success: false,
-      message: error.message
+      message: err.message
     });
   }
 });
 
 /**
- * Cloud Run port binding
+ * DEBUG ENDPOINT — FETCH REPAIR ORDER
+ * TEMPORARY
+ */
+app.get("/debug/repair-order/:id", async (req, res) => {
+  try {
+    const token = await getAccessToken();
+    const roId = req.params.id;
+
+    const response = await fetch(
+      `${TEKMETRIC_BASE_URL}/api/v1/repair-orders/${roId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text);
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Cloud Run entrypoint
  */
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
