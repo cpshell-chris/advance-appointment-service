@@ -1,25 +1,8 @@
 import express from "express";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
-
-/**
- * CORS
- */
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
-  );
-
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
-
-  next();
-});
 
 const {
   TEKMETRIC_CLIENT_ID,
@@ -27,14 +10,18 @@ const {
   TEKMETRIC_BASE_URL
 } = process.env;
 
+if (!TEKMETRIC_CLIENT_ID || !TEKMETRIC_CLIENT_SECRET || !TEKMETRIC_BASE_URL) {
+  throw new Error("Missing required Tekmetric environment variables");
+}
+
+/* ============================
+   OAuth Token Handling
+============================ */
+
 let cachedToken = null;
 let tokenExpiresAt = 0;
 
 async function getAccessToken() {
-  if (!TEKMETRIC_CLIENT_ID || !TEKMETRIC_CLIENT_SECRET || !TEKMETRIC_BASE_URL) {
-    throw new Error("Tekmetric environment variables not configured");
-  }
-
   const now = Date.now();
 
   if (cachedToken && now < tokenExpiresAt) {
@@ -69,52 +56,112 @@ async function getAccessToken() {
   return cachedToken;
 }
 
-/**
- * Health
- */
-app.get("/", (req, res) => {
-  res.json({ status: "Service running" });
-});
+/* ============================
+   Fetch Helpers
+============================ */
 
-/**
- * Get RO
- */
-app.get("/ro/:id", async (req, res) => {
+async function tekmetricGet(token, path) {
+  const response = await fetch(
+    `${TEKMETRIC_BASE_URL}${path}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Tekmetric GET failed: ${text}`);
+  }
+
+  return response.json();
+}
+
+/* ============================
+   RO Endpoint
+============================ */
+
+app.get("/ro/:roId", async (req, res) => {
   try {
+    const { roId } = req.params;
+
     const token = await getAccessToken();
 
-    const response = await fetch(
-      `${TEKMETRIC_BASE_URL}/api/v1/repair-orders/${req.params.id}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      }
+    // 1️⃣ Get Repair Order
+    const roResponse = await tekmetricGet(
+      token,
+      `/api/v1/repair-orders/${roId}`
     );
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text);
+    const ro = roResponse;
+
+    if (!ro || !ro.customerId || !ro.vehicleId) {
+      return res.status(404).json({
+        success: false,
+        message: "Repair order missing required data"
+      });
     }
 
-    const ro = await response.json();
+    // 2️⃣ Get Customer
+    const customerResponse = await tekmetricGet(
+      token,
+      `/api/v1/customers/${ro.customerId}`
+    );
+
+    const customer = customerResponse;
+
+    // 3️⃣ Get Vehicle
+    const vehicleResponse = await tekmetricGet(
+      token,
+      `/api/v1/vehicles/${ro.vehicleId}`
+    );
+
+    const vehicle = vehicleResponse;
 
     res.json({
       success: true,
       roId: ro.id,
       roNumber: ro.repairOrderNumber,
       shopId: ro.shopId,
-      customer: ro.customer,
-      vehicle: ro.vehicle
+      customer: {
+        id: customer.id,
+        firstName: customer.firstName,
+        lastName: customer.lastName,
+        email: customer.email
+      },
+      vehicle: {
+        id: vehicle.id,
+        year: vehicle.year,
+        make: vehicle.make,
+        model: vehicle.model,
+        vin: vehicle.vin
+      }
     });
+
   } catch (err) {
-    console.error("RO error:", err);
-    res.status(500).json({ success: false, message: err.message });
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: err.message
+    });
   }
 });
 
+/* ============================
+   Health Check
+============================ */
+
+app.get("/", (req, res) => {
+  res.send("Advance Appointment Service Running");
+});
+
+/* ============================
+   Start Server
+============================ */
+
 const PORT = process.env.PORT || 8080;
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Listening on ${PORT}`);
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
 });
