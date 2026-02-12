@@ -1,13 +1,10 @@
 import express from "express";
-import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
 
 /**
- * -------------------------
  * CORS
- * -------------------------
  */
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -24,22 +21,12 @@ app.use((req, res, next) => {
   next();
 });
 
-/**
- * -------------------------
- * ENV VARS
- * -------------------------
- */
 const {
   TEKMETRIC_CLIENT_ID,
   TEKMETRIC_CLIENT_SECRET,
   TEKMETRIC_BASE_URL
 } = process.env;
 
-/**
- * -------------------------
- * TOKEN CACHE
- * -------------------------
- */
 let cachedToken = null;
 let tokenExpiresAt = 0;
 
@@ -83,28 +70,21 @@ async function getAccessToken() {
 }
 
 /**
- * -------------------------
- * HEALTH CHECK
- * -------------------------
+ * Health
  */
 app.get("/", (req, res) => {
-  res.json({
-    status: "Advance Appointment service running"
-  });
+  res.json({ status: "Service running" });
 });
 
 /**
- * -------------------------
- * GET REPAIR ORDER
- * -------------------------
+ * Get RO
  */
 app.get("/ro/:id", async (req, res) => {
   try {
-    const roId = req.params.id;
     const token = await getAccessToken();
 
     const response = await fetch(
-      `${TEKMETRIC_BASE_URL}/api/v1/repair-orders/${roId}`,
+      `${TEKMETRIC_BASE_URL}/api/v1/repair-orders/${req.params.id}`,
       {
         headers: {
           Authorization: `Bearer ${token}`
@@ -114,7 +94,7 @@ app.get("/ro/:id", async (req, res) => {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Tekmetric fetch failed: ${text}`);
+      throw new Error(text);
     }
 
     const ro = await response.json();
@@ -124,37 +104,17 @@ app.get("/ro/:id", async (req, res) => {
       roId: ro.id,
       roNumber: ro.repairOrderNumber,
       shopId: ro.shopId,
-      customer: {
-        id: ro.customerId,
-        firstName: ro.customer?.firstName || "",
-        lastName: ro.customer?.lastName || "",
-        email: ro.customer?.email || null
-      },
-      vehicle: {
-        id: ro.vehicleId,
-        year: ro.vehicle?.year,
-        make: ro.vehicle?.make,
-        model: ro.vehicle?.model,
-        vin: ro.vehicle?.vin
-      }
+      customer: ro.customer,
+      vehicle: ro.vehicle
     });
   } catch (err) {
-    console.error("RO fetch error:", err.message);
-
-    res.status(500).json({
-      success: false,
-      message: err.message
-    });
+    console.error("RO error:", err);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-/**
- * -------------------------
- * START SERVER
- * -------------------------
- */
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Listening on ${PORT}`);
 });
