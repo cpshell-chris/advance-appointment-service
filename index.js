@@ -6,7 +6,7 @@ app.use(express.json());
 
 /**
  * -------------------------
- * CORS MIDDLEWARE
+ * CORS
  * -------------------------
  */
 app.use((req, res, next) => {
@@ -24,15 +24,16 @@ app.use((req, res, next) => {
   next();
 });
 
+/**
+ * -------------------------
+ * ENV VARS
+ * -------------------------
+ */
 const {
   TEKMETRIC_CLIENT_ID,
   TEKMETRIC_CLIENT_SECRET,
   TEKMETRIC_BASE_URL
 } = process.env;
-
-if (!TEKMETRIC_CLIENT_ID || !TEKMETRIC_CLIENT_SECRET || !TEKMETRIC_BASE_URL) {
-  throw new Error("Missing required Tekmetric environment variables");
-}
 
 /**
  * -------------------------
@@ -43,6 +44,10 @@ let cachedToken = null;
 let tokenExpiresAt = 0;
 
 async function getAccessToken() {
+  if (!TEKMETRIC_CLIENT_ID || !TEKMETRIC_CLIENT_SECRET || !TEKMETRIC_BASE_URL) {
+    throw new Error("Tekmetric environment variables not configured");
+  }
+
   const now = Date.now();
 
   if (cachedToken && now < tokenExpiresAt) {
@@ -83,12 +88,14 @@ async function getAccessToken() {
  * -------------------------
  */
 app.get("/", (req, res) => {
-  res.json({ status: "Advance Appointment service running" });
+  res.json({
+    status: "Advance Appointment service running"
+  });
 });
 
 /**
  * -------------------------
- * GET REPAIR ORDER DATA
+ * GET REPAIR ORDER
  * -------------------------
  */
 app.get("/ro/:id", async (req, res) => {
@@ -119,8 +126,8 @@ app.get("/ro/:id", async (req, res) => {
       shopId: ro.shopId,
       customer: {
         id: ro.customerId,
-        firstName: ro.customerFirstName || ro.customer?.firstName || "",
-        lastName: ro.customerLastName || ro.customer?.lastName || "",
+        firstName: ro.customer?.firstName || "",
+        lastName: ro.customer?.lastName || "",
         email: ro.customer?.email || null
       },
       vehicle: {
@@ -132,7 +139,8 @@ app.get("/ro/:id", async (req, res) => {
       }
     });
   } catch (err) {
-    console.error(err);
+    console.error("RO fetch error:", err.message);
+
     res.status(500).json({
       success: false,
       message: err.message
@@ -148,5 +156,5 @@ app.get("/ro/:id", async (req, res) => {
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Advance Appointment service running on port ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
