@@ -177,6 +177,37 @@ app.get("/healthz", (req, res) => {
     missingEnvVars: config.missing
   });
 });
+app.get("/test-ro-list", async (req, res) => {
+  try {
+    const config = validateTekmetricConfig();
+    if (!config.ok) {
+      return res.status(503).json({
+        success: false,
+        message: "Service not configured",
+        missingEnvVars: config.missing
+      });
+    }
+
+    const token = await getAccessToken();
+
+    const data = await tekmetricGet(
+      token,
+      `/api/v1/repair-orders?limit=5`
+    );
+
+    return res.json({
+      success: true,
+      data
+    });
+  } catch (err) {
+    console.error("/test-ro-list error", err);
+    return res.status(500).json({
+      success: false,
+      message: err instanceof Error ? err.message : "Internal server error"
+    });
+  }
+});
+
 
 /* ============================
    RO DETAILS (UPGRADED)
