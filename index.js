@@ -26,8 +26,14 @@ app.use((req, res, next) => {
     res.setHeader("Vary", "Origin");
   }
 
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization"
+  );
   res.setHeader("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") {
@@ -50,8 +56,11 @@ function getTekmetricConfig() {
 }
 
 function validateTekmetricConfig() {
-  const { TEKMETRIC_CLIENT_ID, TEKMETRIC_CLIENT_SECRET, TEKMETRIC_BASE_URL } =
-    getTekmetricConfig();
+  const {
+    TEKMETRIC_CLIENT_ID,
+    TEKMETRIC_CLIENT_SECRET,
+    TEKMETRIC_BASE_URL
+  } = getTekmetricConfig();
 
   const missing = [];
 
@@ -107,30 +116,35 @@ async function getAccessToken() {
 
   const fetch = getFetch();
 
-  const response = await fetch(`${TEKMETRIC_BASE_URL}/api/v1/oauth/token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body: "grant_type=client_credentials"
-  });
+  const response = await fetch(
+    `${TEKMETRIC_BASE_URL}/api/v1/oauth/token`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: "grant_type=client_credentials"
+    }
+  );
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Tekmetric auth failed (${response.status}): ${text}`);
+    throw new Error(
+      `Tekmetric auth failed (${response.status}): ${text}`
+    );
   }
 
   const data = await response.json();
 
   cachedToken = data.access_token;
 
-  const expiresInMs =
-    Number.isFinite(data.expires_in)
-      ? Number(data.expires_in) * 1000
-      : 55 * 60 * 1000;
+  const expiresInMs = Number.isFinite(data.expires_in)
+    ? Number(data.expires_in) * 1000
+    : 55 * 60 * 1000;
 
-  tokenExpiresAt = now + Math.max(60 * 1000, expiresInMs - 60 * 1000);
+  tokenExpiresAt =
+    now + Math.max(60 * 1000, expiresInMs - 60 * 1000);
 
   return cachedToken;
 }
@@ -144,11 +158,14 @@ async function tekmetricGet(token, path) {
 
   const fetch = getFetch();
 
-  const response = await fetch(`${TEKMETRIC_BASE_URL}${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`
+  const response = await fetch(
+    `${TEKMETRIC_BASE_URL}${path}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
     }
-  });
+  );
 
   if (!response.ok) {
     const text = await response.text();
@@ -177,40 +194,9 @@ app.get("/healthz", (req, res) => {
     missingEnvVars: config.missing
   });
 });
-app.get("/test-ro-list", async (req, res) => {
-  try {
-    const config = validateTekmetricConfig();
-    if (!config.ok) {
-      return res.status(503).json({
-        success: false,
-        message: "Service not configured",
-        missingEnvVars: config.missing
-      });
-    }
-
-    const token = await getAccessToken();
-
-    const data = await tekmetricGet(
-      token,
-      `/api/v1/repair-orders?limit=5`
-    );
-
-    return res.json({
-      success: true,
-      data
-    });
-  } catch (err) {
-    console.error("/test-ro-list error", err);
-    return res.status(500).json({
-      success: false,
-      message: err instanceof Error ? err.message : "Internal server error"
-    });
-  }
-});
-
 
 /* ============================
-   RO DETAILS (UPGRADED)
+   RO DETAILS (milesOut)
 ============================ */
 
 app.get("/ro/:roId", async (req, res) => {
@@ -219,7 +205,7 @@ app.get("/ro/:roId", async (req, res) => {
     if (!config.ok) {
       return res.status(503).json({
         success: false,
-        message: "Service is not fully configured",
+        message: "Service not fully configured",
         missingEnvVars: config.missing
       });
     }
@@ -248,8 +234,8 @@ app.get("/ro/:roId", async (req, res) => {
       roId: ro.id,
       roNumber: ro.repairOrderNumber,
       shopId: ro.shopId,
-      mileage: ro.milesIn || null,
-      completedDate: ro.completedDate || null,
+      mileage: ro.milesOut ?? null,
+      completedDate: ro.completedDate ?? null,
       customer,
       vehicle
     });
@@ -257,13 +243,16 @@ app.get("/ro/:roId", async (req, res) => {
     console.error("/ro/:roId error", err);
     return res.status(500).json({
       success: false,
-      message: err instanceof Error ? err.message : "Internal server error"
+      message:
+        err instanceof Error
+          ? err.message
+          : "Internal server error"
     });
   }
 });
 
 /* ============================
-   VEHICLE HISTORY (NEW)
+   VEHICLE HISTORY (milesOut)
 ============================ */
 
 app.get("/vehicle/:vehicleId/history", async (req, res) => {
@@ -272,7 +261,7 @@ app.get("/vehicle/:vehicleId/history", async (req, res) => {
     if (!config.ok) {
       return res.status(503).json({
         success: false,
-        message: "Service is not fully configured",
+        message: "Service not fully configured",
         missingEnvVars: config.missing
       });
     }
@@ -283,13 +272,15 @@ app.get("/vehicle/:vehicleId/history", async (req, res) => {
 
     const result = await tekmetricGet(
       token,
-      `/api/v1/repair-orders?vehicleId=${encodeURIComponent(vehicleId)}&limit=50`
+      `/api/v1/repair-orders?vehicleId=${encodeURIComponent(
+        vehicleId
+      )}&limit=50`
     );
 
     const ros = result.data || [];
 
     const validHistory = ros
-      .filter((ro) => ro.milesIn && ro.completedDate)
+      .filter((ro) => ro.milesOut && ro.completedDate)
       .sort(
         (a, b) =>
           new Date(b.completedDate).getTime() -
@@ -297,7 +288,7 @@ app.get("/vehicle/:vehicleId/history", async (req, res) => {
       )
       .slice(0, 3)
       .map((ro) => ({
-        miles: ro.milesIn,
+        miles: ro.milesOut,
         date: ro.completedDate
       }));
 
@@ -309,7 +300,10 @@ app.get("/vehicle/:vehicleId/history", async (req, res) => {
     console.error("/vehicle/:vehicleId/history error", err);
     return res.status(500).json({
       success: false,
-      message: err instanceof Error ? err.message : "Internal server error"
+      message:
+        err instanceof Error
+          ? err.message
+          : "Internal server error"
     });
   }
 });
