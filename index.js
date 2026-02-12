@@ -10,8 +10,12 @@ const {
   TEKMETRIC_BASE_URL
 } = process.env;
 
+/* ============================
+   Safety Check (NO CRASH)
+============================ */
+
 if (!TEKMETRIC_CLIENT_ID || !TEKMETRIC_CLIENT_SECRET || !TEKMETRIC_BASE_URL) {
-  throw new Error("Missing required Tekmetric environment variables");
+  console.error("Missing Tekmetric environment variables");
 }
 
 /* ============================
@@ -22,6 +26,10 @@ let cachedToken = null;
 let tokenExpiresAt = 0;
 
 async function getAccessToken() {
+  if (!TEKMETRIC_CLIENT_ID || !TEKMETRIC_CLIENT_SECRET || !TEKMETRIC_BASE_URL) {
+    throw new Error("Tekmetric environment variables not configured");
+  }
+
   const now = Date.now();
 
   if (cachedToken && now < tokenExpiresAt) {
@@ -57,7 +65,7 @@ async function getAccessToken() {
 }
 
 /* ============================
-   Fetch Helpers
+   Generic GET
 ============================ */
 
 async function tekmetricGet(token, path) {
@@ -88,13 +96,10 @@ app.get("/ro/:roId", async (req, res) => {
 
     const token = await getAccessToken();
 
-    // 1️⃣ Get Repair Order
-    const roResponse = await tekmetricGet(
+    const ro = await tekmetricGet(
       token,
       `/api/v1/repair-orders/${roId}`
     );
-
-    const ro = roResponse;
 
     if (!ro || !ro.customerId || !ro.vehicleId) {
       return res.status(404).json({
@@ -103,21 +108,15 @@ app.get("/ro/:roId", async (req, res) => {
       });
     }
 
-    // 2️⃣ Get Customer
-    const customerResponse = await tekmetricGet(
+    const customer = await tekmetricGet(
       token,
       `/api/v1/customers/${ro.customerId}`
     );
 
-    const customer = customerResponse;
-
-    // 3️⃣ Get Vehicle
-    const vehicleResponse = await tekmetricGet(
+    const vehicle = await tekmetricGet(
       token,
       `/api/v1/vehicles/${ro.vehicleId}`
     );
-
-    const vehicle = vehicleResponse;
 
     res.json({
       success: true,
@@ -162,6 +161,6 @@ app.get("/", (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server listening on port ${PORT}`);
 });
