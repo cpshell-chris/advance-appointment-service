@@ -150,31 +150,37 @@ async function getAccessToken() {
 }
 
 /* ============================
-   Generic GET
+   Generic Request (GET + POST)
 ============================ */
 
-async function tekmetricGet(token, path) {
+async function tekmetricRequest(token, method, path, body) {
   const { TEKMETRIC_BASE_URL } = getTekmetricConfig();
-
   const fetch = getFetch();
 
   const response = await fetch(
     `${TEKMETRIC_BASE_URL}${path}`,
     {
+      method,
       headers: {
-        Authorization: `Bearer ${token}`
-      }
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: body ? JSON.stringify(body) : undefined
     }
   );
 
   if (!response.ok) {
     const text = await response.text();
     throw new Error(
-      `Tekmetric GET failed (${response.status}) [${path}]: ${text}`
+      `Tekmetric ${method} failed (${response.status}) [${path}]: ${text}`
     );
   }
 
   return response.json();
+}
+
+async function tekmetricGet(token, path) {
+  return tekmetricRequest(token, "GET", path);
 }
 
 /* ============================
@@ -211,7 +217,6 @@ app.get("/ro/:roId", async (req, res) => {
     }
 
     const { roId } = req.params;
-
     const token = await getAccessToken();
 
     const ro = await tekmetricGet(
@@ -252,10 +257,10 @@ app.get("/ro/:roId", async (req, res) => {
 });
 
 /* ============================
-   VEHICLE HISTORY (milesOut)
+   CREATE APPOINTMENT
 ============================ */
 
-app.get("/vehicle/:vehicleId/history", async (req, res) => {
+app.post("/appointments", async (req, res) => {
   try {
     const config = validateTekmetricConfig();
     if (!config.ok) {
@@ -266,38 +271,40 @@ app.get("/vehicle/:vehicleId/history", async (req, res) => {
       });
     }
 
-    const { vehicleId } = req.params;
+    const { customerId, vehicleId, date, mileage } = req.body;
+
+    if (!customerId || !vehicleId || !date) {
+      return res.status(400).json({
+        success: false,
+        message: "customerId, vehicleId and date are required"
+      });
+    }
 
     const token = await getAccessToken();
 
-    const result = await tekmetricGet(
+    const payload = {
+      customerId,
+      vehicleId,
+      startDate: new Date(date).toISOString(),
+      endDate: new Date(date).toISOString(),
+      mileage: mileage ?? null,
+      statusId: 1
+    };
+
+    const created = await tekmetricRequest(
       token,
-      `/api/v1/repair-orders?vehicleId=${encodeURIComponent(
-        vehicleId
-      )}&limit=50`
+      "POST",
+      "/api/v1/appointments",
+      payload
     );
-
-    const ros = result.data || [];
-
-    const validHistory = ros
-      .filter((ro) => ro.milesOut && ro.completedDate)
-      .sort(
-        (a, b) =>
-          new Date(b.completedDate).getTime() -
-          new Date(a.completedDate).getTime()
-      )
-      .slice(0, 3)
-      .map((ro) => ({
-        miles: ro.milesOut,
-        date: ro.completedDate
-      }));
 
     return res.json({
       success: true,
-      history: validHistory
+      appointmentId: created.id,
+      data: created
     });
   } catch (err) {
-    console.error("/vehicle/:vehicleId/history error", err);
+    console.error("/appointments error", err);
     return res.status(500).json({
       success: false,
       message:
