@@ -38,23 +38,21 @@ app.use((req, res, next) => {
 });
 
 /* ============================
-   Config Helpers (NO STARTUP CRASH)
+   Config Helpers
 ============================ */
 
 function getTekmetricConfig() {
-  const TEKMETRIC_CLIENT_ID = process.env.TEKMETRIC_CLIENT_ID;
-  const TEKMETRIC_CLIENT_SECRET = process.env.TEKMETRIC_CLIENT_SECRET;
-  const TEKMETRIC_BASE_URL = process.env.TEKMETRIC_BASE_URL;
-
   return {
-    TEKMETRIC_CLIENT_ID,
-    TEKMETRIC_CLIENT_SECRET,
-    TEKMETRIC_BASE_URL
+    TEKMETRIC_CLIENT_ID: process.env.TEKMETRIC_CLIENT_ID,
+    TEKMETRIC_CLIENT_SECRET: process.env.TEKMETRIC_CLIENT_SECRET,
+    TEKMETRIC_BASE_URL: process.env.TEKMETRIC_BASE_URL
   };
 }
 
 function validateTekmetricConfig() {
-  const { TEKMETRIC_CLIENT_ID, TEKMETRIC_CLIENT_SECRET, TEKMETRIC_BASE_URL } = getTekmetricConfig();
+  const { TEKMETRIC_CLIENT_ID, TEKMETRIC_CLIENT_SECRET, TEKMETRIC_BASE_URL } =
+    getTekmetricConfig();
+
   const missing = [];
 
   if (!TEKMETRIC_CLIENT_ID) missing.push("TEKMETRIC_CLIENT_ID");
@@ -67,11 +65,6 @@ function validateTekmetricConfig() {
   };
 }
 
-const initialValidation = validateTekmetricConfig();
-if (!initialValidation.ok) {
-  console.error(`Missing Tekmetric environment variables: ${initialValidation.missing.join(", ")}`);
-}
-
 /* ============================
    OAuth Token Handling
 ============================ */
@@ -81,7 +74,7 @@ let tokenExpiresAt = 0;
 
 function getFetch() {
   if (typeof globalThis.fetch !== "function") {
-    throw new Error("Fetch API is not available in this runtime. Use Node.js 18+ or install a fetch polyfill.");
+    throw new Error("Fetch API not available. Use Node 18+.");
   }
   return globalThis.fetch;
 }
@@ -89,19 +82,31 @@ function getFetch() {
 async function getAccessToken() {
   const config = validateTekmetricConfig();
   if (!config.ok) {
-    throw new Error(`Tekmetric environment variables not configured: ${config.missing.join(", ")}`);
+    throw new Error(
+      `Tekmetric environment variables not configured: ${config.missing.join(
+        ", "
+      )}`
+    );
   }
 
-  const { TEKMETRIC_CLIENT_ID, TEKMETRIC_CLIENT_SECRET, TEKMETRIC_BASE_URL } = getTekmetricConfig();
+  const {
+    TEKMETRIC_CLIENT_ID,
+    TEKMETRIC_CLIENT_SECRET,
+    TEKMETRIC_BASE_URL
+  } = getTekmetricConfig();
+
   const now = Date.now();
 
   if (cachedToken && now < tokenExpiresAt) {
     return cachedToken;
   }
 
-  const auth = Buffer.from(`${TEKMETRIC_CLIENT_ID}:${TEKMETRIC_CLIENT_SECRET}`).toString("base64");
+  const auth = Buffer.from(
+    `${TEKMETRIC_CLIENT_ID}:${TEKMETRIC_CLIENT_SECRET}`
+  ).toString("base64");
 
   const fetch = getFetch();
+
   const response = await fetch(`${TEKMETRIC_BASE_URL}/api/v1/oauth/token`, {
     method: "POST",
     headers: {
@@ -118,12 +123,13 @@ async function getAccessToken() {
 
   const data = await response.json();
 
-  if (!data?.access_token) {
-    throw new Error("Tekmetric auth response did not include access_token");
-  }
-
   cachedToken = data.access_token;
-  const expiresInMs = Number.isFinite(data.expires_in) ? Number(data.expires_in) * 1000 : 55 * 60 * 1000;
+
+  const expiresInMs =
+    Number.isFinite(data.expires_in)
+      ? Number(data.expires_in) * 1000
+      : 55 * 60 * 1000;
+
   tokenExpiresAt = now + Math.max(60 * 1000, expiresInMs - 60 * 1000);
 
   return cachedToken;
@@ -137,6 +143,7 @@ async function tekmetricGet(token, path) {
   const { TEKMETRIC_BASE_URL } = getTekmetricConfig();
 
   const fetch = getFetch();
+
   const response = await fetch(`${TEKMETRIC_BASE_URL}${path}`, {
     headers: {
       Authorization: `Bearer ${token}`
@@ -145,7 +152,9 @@ async function tekmetricGet(token, path) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Tekmetric GET failed (${response.status}) [${path}]: ${text}`);
+    throw new Error(
+      `Tekmetric GET failed (${response.status}) [${path}]: ${text}`
+    );
   }
 
   return response.json();
@@ -169,6 +178,10 @@ app.get("/healthz", (req, res) => {
   });
 });
 
+/* ============================
+   RO DETAILS (UPGRADED)
+============================ */
+
 app.get("/ro/:roId", async (req, res) => {
   try {
     const config = validateTekmetricConfig();
@@ -181,48 +194,88 @@ app.get("/ro/:roId", async (req, res) => {
     }
 
     const { roId } = req.params;
-    if (!roId) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing required route parameter: roId"
-      });
-    }
 
     const token = await getAccessToken();
 
-    const ro = await tekmetricGet(token, `/api/v1/repair-orders/${encodeURIComponent(roId)}`);
+    const ro = await tekmetricGet(
+      token,
+      `/api/v1/repair-orders/${encodeURIComponent(roId)}`
+    );
 
-    if (!ro || !ro.customerId || !ro.vehicleId) {
-      return res.status(404).json({
-        success: false,
-        message: "Repair order missing required data"
-      });
-    }
+    const customer = await tekmetricGet(
+      token,
+      `/api/v1/customers/${encodeURIComponent(ro.customerId)}`
+    );
 
-    const customer = await tekmetricGet(token, `/api/v1/customers/${encodeURIComponent(ro.customerId)}`);
-    const vehicle = await tekmetricGet(token, `/api/v1/vehicles/${encodeURIComponent(ro.vehicleId)}`);
+    const vehicle = await tekmetricGet(
+      token,
+      `/api/v1/vehicles/${encodeURIComponent(ro.vehicleId)}`
+    );
 
     return res.json({
       success: true,
       roId: ro.id,
       roNumber: ro.repairOrderNumber,
       shopId: ro.shopId,
-      customer: {
-        id: customer.id,
-        firstName: customer.firstName,
-        lastName: customer.lastName,
-        email: customer.email
-      },
-      vehicle: {
-        id: vehicle.id,
-        year: vehicle.year,
-        make: vehicle.make,
-        model: vehicle.model,
-        vin: vehicle.vin
-      }
+      mileage: ro.milesIn || null,
+      completedDate: ro.completedDate || null,
+      customer,
+      vehicle
     });
   } catch (err) {
     console.error("/ro/:roId error", err);
+    return res.status(500).json({
+      success: false,
+      message: err instanceof Error ? err.message : "Internal server error"
+    });
+  }
+});
+
+/* ============================
+   VEHICLE HISTORY (NEW)
+============================ */
+
+app.get("/vehicle/:vehicleId/history", async (req, res) => {
+  try {
+    const config = validateTekmetricConfig();
+    if (!config.ok) {
+      return res.status(503).json({
+        success: false,
+        message: "Service is not fully configured",
+        missingEnvVars: config.missing
+      });
+    }
+
+    const { vehicleId } = req.params;
+
+    const token = await getAccessToken();
+
+    const result = await tekmetricGet(
+      token,
+      `/api/v1/repair-orders?vehicleId=${encodeURIComponent(vehicleId)}&limit=50`
+    );
+
+    const ros = result.data || [];
+
+    const validHistory = ros
+      .filter((ro) => ro.milesIn && ro.completedDate)
+      .sort(
+        (a, b) =>
+          new Date(b.completedDate).getTime() -
+          new Date(a.completedDate).getTime()
+      )
+      .slice(0, 3)
+      .map((ro) => ({
+        miles: ro.milesIn,
+        date: ro.completedDate
+      }));
+
+    return res.json({
+      success: true,
+      history: validHistory
+    });
+  } catch (err) {
+    console.error("/vehicle/:vehicleId/history error", err);
     return res.status(500).json({
       success: false,
       message: err instanceof Error ? err.message : "Internal server error"
