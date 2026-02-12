@@ -271,37 +271,62 @@ app.post("/appointments", async (req, res) => {
       });
     }
 
-    const { customerId, vehicleId, date, mileage } = req.body;
+    const {
+      shopId,
+      customerId,
+      vehicleId,
+      title,
+      startTime,
+      endTime,
+      mileage
+    } = req.body;
 
-    if (!customerId || !vehicleId || !date) {
+    if (!shopId || !customerId || !vehicleId || !title || !startTime || !endTime) {
       return res.status(400).json({
         success: false,
-        message: "customerId, vehicleId and date are required"
+        message:
+          "shopId, customerId, vehicleId, title, startTime and endTime are required"
       });
     }
 
     const token = await getAccessToken();
 
-    const payload = {
-      customerId,
-      vehicleId,
-      startDate: new Date(date).toISOString(),
-      endDate: new Date(date).toISOString(),
-      mileage: mileage ?? null,
-      statusId: 1
-    };
+    const { TEKMETRIC_BASE_URL } = getTekmetricConfig();
 
-    const created = await tekmetricRequest(
-      token,
-      "POST",
-      "/api/v1/appointments",
-      payload
+    const fetch = getFetch();
+
+    const response = await fetch(
+      `${TEKMETRIC_BASE_URL}/api/v1/appointments`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          shopId,
+          customerId,
+          vehicleId,
+          title,
+          startTime,
+          endTime,
+          mileage
+        })
+      }
     );
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(
+        `Tekmetric POST failed (${response.status}): ${text}`
+      );
+    }
+
+    const data = await response.json();
 
     return res.json({
       success: true,
-      appointmentId: created.id,
-      data: created
+      appointment: data
     });
   } catch (err) {
     console.error("/appointments error", err);
@@ -314,6 +339,7 @@ app.post("/appointments", async (req, res) => {
     });
   }
 });
+
 
 /* ============================
    Error Handling
