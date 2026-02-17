@@ -1,7 +1,6 @@
 import express from "express";
 import { DateTime } from "luxon";
 
-
 const app = express();
 app.use(express.json());
 
@@ -132,9 +131,7 @@ async function getAccessToken() {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(
-      `Tekmetric auth failed (${response.status}): ${text}`
-    );
+        throw new Error(`Tekmetric auth failed (${response.status}): ${text}`);
   }
 
   const data = await response.json();
@@ -145,9 +142,7 @@ async function getAccessToken() {
     ? Number(data.expires_in) * 1000
     : 55 * 60 * 1000;
 
-  tokenExpiresAt =
-    now + Math.max(60 * 1000, expiresInMs - 60 * 1000);
-
+    tokenExpiresAt = now + Math.max(60 * 1000, expiresInMs - 60 * 1000);
   return cachedToken;
 }
 
@@ -159,17 +154,14 @@ async function tekmetricRequest(token, method, path, body) {
   const { TEKMETRIC_BASE_URL } = getTekmetricConfig();
   const fetch = getFetch();
 
-  const response = await fetch(
-    `${TEKMETRIC_BASE_URL}${path}`,
-    {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: body ? JSON.stringify(body) : undefined
-    }
-  );
+  const response = await fetch(`${TEKMETRIC_BASE_URL}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
 
   if (!response.ok) {
     const text = await response.text();
@@ -188,7 +180,11 @@ async function tekmetricGet(token, path) {
 function toDateKey(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return date.toISOString().slice(0, 10);
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function getAppointmentsFromResponse(payload) {
@@ -215,12 +211,28 @@ function buildDateRangeKeys(startDate, endDate) {
   return keys.filter(Boolean);
 }
 
+function getRangeBounds(startDate, endDate) {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  start.setHours(0, 0, 0, 0);
+  end.setHours(23, 59, 59, 999);
+
+  return {
+    startIso: start.toISOString(),
+    endIso: end.toISOString()
+  };
+}
+
 async function fetchAppointmentsForRange(token, shopId, startDate, endDate) {
+  const { startIso, endIso } = getRangeBounds(startDate, endDate);
+
   const queryAttempts = [
-    { startTime: startDate, endTime: endDate },
-    { startDate, endDate },
-    { from: startDate, to: endDate },
-    { dateFrom: startDate, dateTo: endDate }
+    { startTime: startIso, endTime: endIso },
+    { startDate: startIso, endDate: endIso },
+    { from: startIso, to: endIso },
+    { dateFrom: startIso, dateTo: endIso },
+    { shopId: String(shopId), limit: "500" }
   ];
 
   for (const query of queryAttempts) {
@@ -235,15 +247,16 @@ async function fetchAppointmentsForRange(token, shopId, startDate, endDate) {
         `/api/v1/appointments?${params.toString()}`
       );
 
-      return getAppointmentsFromResponse(payload);
+      const list = getAppointmentsFromResponse(payload);
+      if (list.length > 0 || query.limit) {
+        return list;
+      }
     } catch (err) {
       continue;
     }
   }
 
-  throw new Error(
-    "Unable to fetch appointments for the provided date range"
-  );
+  return [];
 }
 
 /* ============================
@@ -367,10 +380,60 @@ app.get("/appointments/counts", async (req, res) => {
     console.error("/appointments/counts error", err);
     return res.status(500).json({
       success: false,
-      message:
-        err instanceof Error
-          ? err.message
-          : "Internal server error"
+      message: err instanceof Error ? err.message : "Internal server error"
+    });
+  }
+});
+
+app.get("/appointments/counts", async (req, res) => {
+  try {
+    const config = validateTekmetricConfig();
+    if (!config.ok) {
+      return res.status(503).json({
+        success: false,
+        message: "Service not fully configured",
+        missingEnvVars: config.missing
+      });
+    }
+
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId || !startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: "shopId, startDate and endDate are required"
+      });
+    }
+
+    const token = await getAccessToken();
+    const appointments = await fetchAppointmentsForRange(
+      token,
+      shopId,
+      startDate,
+      endDate
+    );
+
+    const counts = {};
+    for (const key of buildDateRangeKeys(startDate, endDate)) {
+      counts[key] = 0;
+    }
+
+    for (const appt of appointments) {
+      const key = toDateKey(appt?.startTime || appt?.startDate);
+      if (!key) continue;
+      if (!(key in counts)) continue;
+      counts[key] += 1;
+    }
+
+    return res.json({
+      success: true,
+      counts
+    });
+  } catch (err) {
+    console.error("/appointments/counts error", err);
+    return res.status(500).json({
+      success: false,
+      message: err instanceof Error ? err.message : "Internal server error"
     });
   }
 });
@@ -401,7 +464,14 @@ app.post("/appointments", async (req, res) => {
       mileage
     } = req.body;
 
-    if (!shopId || !customerId || !vehicleId || !title || !startTime || !endTime) {
+    if (
+      !shopId ||
+      !customerId ||
+      !vehicleId ||
+      !title ||
+      !startTime ||
+      !endTime
+    ) {
       return res.status(400).json({
         success: false,
         message:
@@ -415,32 +485,27 @@ app.post("/appointments", async (req, res) => {
 
     const fetch = getFetch();
 
-    const response = await fetch(
-      `${TEKMETRIC_BASE_URL}/api/v1/appointments`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          shopId,
-          customerId,
-          vehicleId,
-          title,
-          startTime,
-          endTime,
-          mileage
-        })
-      }
-    );
+    const response = await fetch(`${TEKMETRIC_BASE_URL}/api/v1/appointments`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        shopId,
+        customerId,
+        vehicleId,
+        title,
+        startTime,
+        endTime,
+        mileage
+      })
+    });
 
     if (!response.ok) {
       const text = await response.text();
       throw new Error(
-        `Tekmetric POST failed (${response.status}): ${text}`
-      );
-    }
+        throw new Error(`Tekmetric POST failed (${response.status}): ${text}`);
 
     const data = await response.json();
 
@@ -452,14 +517,10 @@ app.post("/appointments", async (req, res) => {
     console.error("/appointments error", err);
     return res.status(500).json({
       success: false,
-      message:
-        err instanceof Error
-          ? err.message
-          : "Internal server error"
+      message: err instanceof Error ? err.message : "Internal server error"
     });
   }
 });
-
 
 /* ============================
    Error Handling
