@@ -1,11 +1,10 @@
 import express from "express";
-import { DateTime } from "luxon";
 
 const app = express();
 app.use(express.json());
 
 /* ============================
-   CORS (Chrome extension + preflight)
+   CORS
 ============================ */
 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "*")
@@ -31,10 +30,7 @@ app.use((req, res, next) => {
     "Access-Control-Allow-Methods",
     "GET,POST,PUT,PATCH,DELETE,OPTIONS"
   );
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
-  );
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") {
@@ -64,7 +60,6 @@ function validateTekmetricConfig() {
   } = getTekmetricConfig();
 
   const missing = [];
-
   if (!TEKMETRIC_CLIENT_ID) missing.push("TEKMETRIC_CLIENT_ID");
   if (!TEKMETRIC_CLIENT_SECRET) missing.push("TEKMETRIC_CLIENT_SECRET");
   if (!TEKMETRIC_BASE_URL) missing.push("TEKMETRIC_BASE_URL");
@@ -75,13 +70,6 @@ function validateTekmetricConfig() {
   };
 }
 
-/* ============================
-   OAuth Token Handling
-============================ */
-
-let cachedToken = null;
-let tokenExpiresAt = 0;
-
 function getFetch() {
   if (typeof globalThis.fetch !== "function") {
     throw new Error("Fetch API not available. Use Node 18+.");
@@ -89,13 +77,18 @@ function getFetch() {
   return globalThis.fetch;
 }
 
+/* ============================
+   OAuth Token Handling
+============================ */
+
+let cachedToken = null;
+let tokenExpiresAt = 0;
+
 async function getAccessToken() {
   const config = validateTekmetricConfig();
   if (!config.ok) {
     throw new Error(
-      `Tekmetric environment variables not configured: ${config.missing.join(
-        ", "
-      )}`
+      `Tekmetric environment variables not configured: ${config.missing.join(", ")}`
     );
   }
 
@@ -106,7 +99,6 @@ async function getAccessToken() {
   } = getTekmetricConfig();
 
   const now = Date.now();
-
   if (cachedToken && now < tokenExpiresAt) {
     return cachedToken;
   }
@@ -116,38 +108,33 @@ async function getAccessToken() {
   ).toString("base64");
 
   const fetch = getFetch();
-
-  const response = await fetch(
-    `${TEKMETRIC_BASE_URL}/api/v1/oauth/token`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: "grant_type=client_credentials"
-    }
-  );
+  const response = await fetch(`${TEKMETRIC_BASE_URL}/api/v1/oauth/token`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: "grant_type=client_credentials"
+  });
 
   if (!response.ok) {
     const text = await response.text();
-        throw new Error(`Tekmetric auth failed (${response.status}): ${text}`);
+    throw new Error(`Tekmetric auth failed (${response.status}): ${text}`);
   }
 
   const data = await response.json();
-
   cachedToken = data.access_token;
 
-  const expiresInMs = Number.isFinite(data.expires_in)
+  const expiresInMs = Number.isFinite(Number(data.expires_in))
     ? Number(data.expires_in) * 1000
     : 55 * 60 * 1000;
 
-    tokenExpiresAt = now + Math.max(60 * 1000, expiresInMs - 60 * 1000);
+  tokenExpiresAt = now + Math.max(60 * 1000, expiresInMs - 60 * 1000);
   return cachedToken;
 }
 
 /* ============================
-   Generic Request (GET + POST)
+   Tekmetric Request Helpers
 ============================ */
 
 async function tekmetricRequest(token, method, path, body) {
@@ -165,15 +152,13 @@ async function tekmetricRequest(token, method, path, body) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(
-      `Tekmetric ${method} failed (${response.status}) [${path}]: ${text}`
-    );
+    throw new Error(`Tekmetric ${method} failed (${response.status}) [${path}]: ${text}`);
   }
 
   return response.json();
 }
 
-async function tekmetricGet(token, path) {
+function tekmetricGet(token, path) {
   return tekmetricRequest(token, "GET", path);
 }
 
@@ -251,8 +236,8 @@ async function fetchAppointmentsForRange(token, shopId, startDate, endDate) {
       if (list.length > 0 || query.limit) {
         return list;
       }
-    } catch (err) {
-      continue;
+    } catch {
+      // Try next query shape
     }
   }
 
@@ -276,10 +261,6 @@ app.get("/healthz", (req, res) => {
     missingEnvVars: config.missing
   });
 });
-
-/* ============================
-   RO DETAILS (milesOut)
-============================ */
 
 app.get("/ro/:roId", async (req, res) => {
   try {
@@ -324,62 +305,6 @@ app.get("/ro/:roId", async (req, res) => {
     console.error("/ro/:roId error", err);
     return res.status(500).json({
       success: false,
-      message:
-        err instanceof Error
-          ? err.message
-          : "Internal server error"
-    });
-  }
-});
-
-app.get("/appointments/counts", async (req, res) => {
-  try {
-    const config = validateTekmetricConfig();
-    if (!config.ok) {
-      return res.status(503).json({
-        success: false,
-        message: "Service not fully configured",
-        missingEnvVars: config.missing
-      });
-    }
-
-    const { shopId, startDate, endDate } = req.query;
-
-    if (!shopId || !startDate || !endDate) {
-      return res.status(400).json({
-        success: false,
-        message: "shopId, startDate and endDate are required"
-      });
-    }
-
-    const token = await getAccessToken();
-    const appointments = await fetchAppointmentsForRange(
-      token,
-      shopId,
-      startDate,
-      endDate
-    );
-
-    const counts = {};
-    for (const key of buildDateRangeKeys(startDate, endDate)) {
-      counts[key] = 0;
-    }
-
-    for (const appt of appointments) {
-      const key = toDateKey(appt?.startTime || appt?.startDate);
-      if (!key) continue;
-      if (!(key in counts)) continue;
-      counts[key] += 1;
-    }
-
-    return res.json({
-      success: true,
-      counts
-    });
-  } catch (err) {
-    console.error("/appointments/counts error", err);
-    return res.status(500).json({
-      success: false,
       message: err instanceof Error ? err.message : "Internal server error"
     });
   }
@@ -437,11 +362,6 @@ app.get("/appointments/counts", async (req, res) => {
     });
   }
 });
-
-
-/* ============================
-   CREATE APPOINTMENT
-============================ */
 
 app.post("/appointments", async (req, res) => {
   try {
@@ -464,14 +384,7 @@ app.post("/appointments", async (req, res) => {
       mileage
     } = req.body;
 
-    if (
-      !shopId ||
-      !customerId ||
-      !vehicleId ||
-      !title ||
-      !startTime ||
-      !endTime
-    ) {
+    if (!shopId || !customerId || !vehicleId || !title || !startTime || !endTime) {
       return res.status(400).json({
         success: false,
         message:
@@ -480,34 +393,15 @@ app.post("/appointments", async (req, res) => {
     }
 
     const token = await getAccessToken();
-
-    const { TEKMETRIC_BASE_URL } = getTekmetricConfig();
-
-    const fetch = getFetch();
-
-    const response = await fetch(`${TEKMETRIC_BASE_URL}/api/v1/appointments`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        shopId,
-        customerId,
-        vehicleId,
-        title,
-        startTime,
-        endTime,
-        mileage
-      })
+    const data = await tekmetricRequest(token, "POST", "/api/v1/appointments", {
+      shopId,
+      customerId,
+      vehicleId,
+      title,
+      startTime,
+      endTime,
+      mileage
     });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(
-        throw new Error(`Tekmetric POST failed (${response.status}): ${text}`);
-
-    const data = await response.json();
 
     return res.json({
       success: true,
@@ -521,10 +415,6 @@ app.post("/appointments", async (req, res) => {
     });
   }
 });
-
-/* ============================
-   Error Handling
-============================ */
 
 app.use((err, req, res, next) => {
   console.error("Unhandled express error", err);
