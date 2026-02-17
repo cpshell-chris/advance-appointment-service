@@ -169,7 +169,7 @@ function tekmetricGet(token, path) {
 /**
  * Fetch all jobs for a repair order.
  * Tekmetric returns jobs under /api/v1/jobs?repairOrderId=X
- * We gracefully return [] if the call fails so it doesn't break the rest.
+ * Response is paginated in a 'content' array.
  */
 async function fetchRoJobs(token, roId) {
   try {
@@ -178,11 +178,9 @@ async function fetchRoJobs(token, roId) {
       token,
       `/api/v1/jobs?${params.toString()}`
     );
-    // Tekmetric paginates — grab whichever array field exists
-    if (Array.isArray(payload)) return payload;
+    // API returns paginated response with 'content' array
     if (Array.isArray(payload?.content)) return payload.content;
-    if (Array.isArray(payload?.data)) return payload.data;
-    if (Array.isArray(payload?.results)) return payload.results;
+    if (Array.isArray(payload)) return payload;
     return [];
   } catch (err) {
     console.warn("fetchRoJobs failed (non-fatal):", err.message);
@@ -245,36 +243,26 @@ function getRangeBounds(startDate, endDate) {
 async function fetchAppointmentsForRange(token, shopId, startDate, endDate) {
   const { startIso, endIso } = getRangeBounds(startDate, endDate);
 
-  const queryAttempts = [
-    { startTime: startIso, endTime: endIso },
-    { startDate: startIso, endDate: endIso },
-    { from: startIso, to: endIso },
-    { dateFrom: startIso, dateTo: endIso },
-    { shopId: String(shopId), limit: "500" }
-  ];
+  // According to API docs, appointments use 'start' and 'end' params
+  const params = new URLSearchParams({
+    shop: String(shopId),
+    start: startIso,
+    end: endIso
+  });
 
-  for (const query of queryAttempts) {
-    const params = new URLSearchParams({
-      shopId: String(shopId),
-      ...query
-    });
+  try {
+    const payload = await tekmetricGet(
+      token,
+      `/api/v1/appointments?${params.toString()}`
+    );
 
-    try {
-      const payload = await tekmetricGet(
-        token,
-        `/api/v1/appointments?${params.toString()}`
-      );
-
-      const list = getAppointmentsFromResponse(payload);
-      if (list.length > 0 || query.limit) {
-        return list;
-      }
-    } catch {
-      // Try next query shape
-    }
+    // API returns { content: [...] } structure
+    const list = getAppointmentsFromResponse(payload);
+    return list;
+  } catch (err) {
+    console.warn("fetchAppointmentsForRange failed:", err.message);
+    return [];
   }
-
-  return [];
 }
 
 /* ============================
