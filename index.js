@@ -162,6 +162,38 @@ function tekmetricGet(token, path) {
   return tekmetricRequest(token, "GET", path);
 }
 
+/* ============================
+   Job / RO Helpers
+============================ */
+
+/**
+ * Fetch all jobs for a repair order.
+ * Tekmetric returns jobs under /api/v1/jobs?repairOrderId=X
+ * We gracefully return [] if the call fails so it doesn't break the rest.
+ */
+async function fetchRoJobs(token, roId) {
+  try {
+    const params = new URLSearchParams({ repairOrderId: String(roId) });
+    const payload = await tekmetricGet(
+      token,
+      `/api/v1/jobs?${params.toString()}`
+    );
+    // Tekmetric paginates — grab whichever array field exists
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.content)) return payload.content;
+    if (Array.isArray(payload?.data)) return payload.data;
+    if (Array.isArray(payload?.results)) return payload.results;
+    return [];
+  } catch (err) {
+    console.warn("fetchRoJobs failed (non-fatal):", err.message);
+    return [];
+  }
+}
+
+/* ============================
+   Appointment Count Helpers
+============================ */
+
 function toDateKey(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
@@ -175,6 +207,7 @@ function toDateKey(value) {
 function getAppointmentsFromResponse(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.content)) return payload.content;
   if (Array.isArray(payload?.results)) return payload.results;
   if (Array.isArray(payload?.items)) return payload.items;
   return [];
@@ -262,6 +295,13 @@ app.get("/healthz", (req, res) => {
   });
 });
 
+/*
+ * GET /ro/:roId
+ *
+ * Returns repair order data including customer, vehicle, and jobs.
+ * Jobs are used by the extension to populate the Repeat Services and
+ * Declined Services lists on screen 2.
+ */
 app.get("/ro/:roId", async (req, res) => {
   try {
     const config = validateTekmetricConfig();
@@ -276,20 +316,17 @@ app.get("/ro/:roId", async (req, res) => {
     const { roId } = req.params;
     const token = await getAccessToken();
 
+    // Fetch RO, customer, vehicle, and jobs in parallel where possible
     const ro = await tekmetricGet(
       token,
       `/api/v1/repair-orders/${encodeURIComponent(roId)}`
     );
 
-    const customer = await tekmetricGet(
-      token,
-      `/api/v1/customers/${encodeURIComponent(ro.customerId)}`
-    );
-
-    const vehicle = await tekmetricGet(
-      token,
-      `/api/v1/vehicles/${encodeURIComponent(ro.vehicleId)}`
-    );
+    const [customer, vehicle, jobs] = await Promise.all([
+      tekmetricGet(token, `/api/v1/customers/${encodeURIComponent(ro.customerId)}`),
+      tekmetricGet(token, `/api/v1/vehicles/${encodeURIComponent(ro.vehicleId)}`),
+      fetchRoJobs(token, roId)
+    ]);
 
     return res.json({
       success: true,
@@ -299,7 +336,8 @@ app.get("/ro/:roId", async (req, res) => {
       mileage: ro.milesOut ?? null,
       completedDate: ro.completedDate ?? null,
       customer,
-      vehicle
+      vehicle,
+      jobs  // <-- now included: array of job objects with name, status, id, etc.
     });
   } catch (err) {
     console.error("/ro/:roId error", err);
@@ -363,6 +401,13 @@ app.get("/appointments/counts", async (req, res) => {
   }
 });
 
+/*
+ * POST /appointments
+ *
+ * Creates an appointment in Tekmetric.
+ * Now accepts: notes, appointmentType ("dropoff" | "wait")
+ * in addition to the original required fields.
+ */
 app.post("/appointments", async (req, res) => {
   try {
     const config = validateTekmetricConfig();
@@ -381,7 +426,9 @@ app.post("/appointments", async (req, res) => {
       title,
       startTime,
       endTime,
-      mileage
+      mileage,
+      notes,
+      appointmentType
     } = req.body;
 
     if (!shopId || !customerId || !vehicleId || !title || !startTime || !endTime) {
@@ -393,15 +440,34 @@ app.post("/appointments", async (req, res) => {
     }
 
     const token = await getAccessToken();
-    const data = await tekmetricRequest(token, "POST", "/api/v1/appointments", {
+
+    // Build the payload — include optional fields only if provided
+    const appointmentPayload = {
       shopId,
       customerId,
       vehicleId,
       title,
       startTime,
-      endTime,
-      mileage
-    });
+      endTime
+    };
+
+    if (mileage != null) appointmentPayload.mileage = mileage;
+    if (notes) appointmentPayload.notes = notes;
+
+    // Tekmetric uses "appointmentType" as a string — map our internal values
+    // to whatever Tekmetric expects. Adjust if their API uses different values.
+    if (appointmentType === "wait") {
+      appointmentPayload.appointmentType = "WAIT";
+    } else {
+      appointmentPayload.appointmentType = "DROP_OFF";
+    }
+
+    const data = await tekmetricRequest(
+      token,
+      "POST",
+      "/api/v1/appointments",
+      appointmentPayload
+    );
 
     return res.json({
       success: true,
