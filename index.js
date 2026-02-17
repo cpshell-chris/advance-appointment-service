@@ -370,6 +370,10 @@ app.get("/appointments/counts", async (req, res) => {
     }
 
     for (const appt of appointments) {
+      // Skip deleted or cancelled appointments
+      if (appt.deletedDate) continue;
+      if (appt.appointmentStatus === "CANCELLED" || appt.appointmentStatus === "NO_SHOW") continue;
+
       const key = toDateKey(appt?.startTime || appt?.startDate);
       if (!key) continue;
       if (!(key in counts)) continue;
