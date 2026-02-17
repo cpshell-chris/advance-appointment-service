@@ -185,6 +185,67 @@ async function tekmetricGet(token, path) {
   return tekmetricRequest(token, "GET", path);
 }
 
+function toDateKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
+}
+
+function getAppointmentsFromResponse(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.results)) return payload.results;
+  if (Array.isArray(payload?.items)) return payload.items;
+  return [];
+}
+
+function buildDateRangeKeys(startDate, endDate) {
+  const keys = [];
+  const cursor = new Date(startDate);
+  const end = new Date(endDate);
+
+  cursor.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+
+  while (cursor <= end) {
+    keys.push(toDateKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return keys.filter(Boolean);
+}
+
+async function fetchAppointmentsForRange(token, shopId, startDate, endDate) {
+  const queryAttempts = [
+    { startTime: startDate, endTime: endDate },
+    { startDate, endDate },
+    { from: startDate, to: endDate },
+    { dateFrom: startDate, dateTo: endDate }
+  ];
+
+  for (const query of queryAttempts) {
+    const params = new URLSearchParams({
+      shopId: String(shopId),
+      ...query
+    });
+
+    try {
+      const payload = await tekmetricGet(
+        token,
+        `/api/v1/appointments?${params.toString()}`
+      );
+
+      return getAppointmentsFromResponse(payload);
+    } catch (err) {
+      continue;
+    }
+  }
+
+  throw new Error(
+    "Unable to fetch appointments for the provided date range"
+  );
+}
+
 /* ============================
    Routes
 ============================ */
@@ -257,6 +318,63 @@ app.get("/ro/:roId", async (req, res) => {
     });
   }
 });
+
+app.get("/appointments/counts", async (req, res) => {
+  try {
+    const config = validateTekmetricConfig();
+    if (!config.ok) {
+      return res.status(503).json({
+        success: false,
+        message: "Service not fully configured",
+        missingEnvVars: config.missing
+      });
+    }
+
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId || !startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: "shopId, startDate and endDate are required"
+      });
+    }
+
+    const token = await getAccessToken();
+    const appointments = await fetchAppointmentsForRange(
+      token,
+      shopId,
+      startDate,
+      endDate
+    );
+
+    const counts = {};
+    for (const key of buildDateRangeKeys(startDate, endDate)) {
+      counts[key] = 0;
+    }
+
+    for (const appt of appointments) {
+      const key = toDateKey(appt?.startTime || appt?.startDate);
+      if (!key) continue;
+      if (!(key in counts)) continue;
+      counts[key] += 1;
+    }
+
+    return res.json({
+      success: true,
+      counts
+    });
+  } catch (err) {
+    console.error("/appointments/counts error", err);
+    return res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error
+          ? err.message
+          : "Internal server error"
+    });
+  }
+});
+
 
 /* ============================
    CREATE APPOINTMENT
