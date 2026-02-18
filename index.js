@@ -172,19 +172,47 @@ function tekmetricGet(token, path) {
  * Response is paginated in a 'content' array.
  */
 async function fetchRoJobs(token, roId) {
+  const pageSize = 200;
+  const jobs = [];
+  let page = 0;
+
   try {
-    const payload = await tekmetricGet(
-      token,
-      `/api/v1/repair-orders/${encodeURIComponent(roId)}/jobs`
-    );
+    while (true) {
+      const params = new URLSearchParams({
+        repairOrderId: String(roId),
+        page: String(page),
+        size: String(pageSize)
+      });
 
-    if (Array.isArray(payload)) return payload;
-    if (Array.isArray(payload?.content)) return payload.content;
+      const payload = await tekmetricGet(
+        token,
+        `/api/v1/jobs?${params.toString()}`
+      );
 
-    return [];
+      const pageJobs = Array.isArray(payload?.content)
+        ? payload.content
+        : Array.isArray(payload)
+        ? payload
+        : [];
+
+      if (pageJobs.length === 0) break;
+
+      jobs.push(...pageJobs);
+
+      const isLastPage = payload?.last === true;
+      const totalPages = Number(payload?.totalPages);
+
+      if (isLastPage) break;
+      if (Number.isFinite(totalPages) && page + 1 >= totalPages) break;
+      if (pageJobs.length < pageSize) break;
+
+      page += 1;
+    }
+
+    return jobs;
   } catch (err) {
-    console.warn("fetchRoJobs failed:", err.message);
-    return [];
+    console.warn("fetchRoJobs failed (non-fatal):", err.message);
+    return jobs;
   }
 }
 
