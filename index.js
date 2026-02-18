@@ -243,25 +243,46 @@ function getRangeBounds(startDate, endDate) {
 async function fetchAppointmentsForRange(token, shopId, startDate, endDate) {
   const { startIso, endIso } = getRangeBounds(startDate, endDate);
 
-  // According to API docs, appointments use 'start' and 'end' params
-  const params = new URLSearchParams({
-    shop: String(shopId),
-    start: startIso,
-    end: endIso
-  });
+  // Tekmetric appointments endpoint is paginated; gather all pages to avoid
+  // undercounting daily totals when first page does not contain all rows.
+  const pageSize = 200;
+  const collected = [];
+  let page = 0;
 
   try {
-    const payload = await tekmetricGet(
-      token,
-      `/api/v1/appointments?${params.toString()}`
-    );
+    while (true) {
+      const params = new URLSearchParams({
+        shop: String(shopId),
+        start: startIso,
+        end: endIso,
+        page: String(page),
+        size: String(pageSize)
+      });
 
-    // API returns { content: [...] } structure
-    const list = getAppointmentsFromResponse(payload);
-    return list;
+      const payload = await tekmetricGet(
+        token,
+        `/api/v1/appointments?${params.toString()}`
+      );
+
+      const list = getAppointmentsFromResponse(payload);
+      if (list.length === 0) break;
+
+      collected.push(...list);
+
+      const isLastPage = payload?.last === true;
+      const totalPages = Number(payload?.totalPages);
+
+      if (isLastPage) break;
+      if (Number.isFinite(totalPages) && page + 1 >= totalPages) break;
+      if (list.length < pageSize) break;
+
+      page += 1;
+    }
+
+    return collected;
   } catch (err) {
     console.warn("fetchAppointmentsForRange failed:", err.message);
-    return [];
+    return collected;
   }
 }
 
