@@ -171,7 +171,7 @@ function tekmetricGet(token, path) {
  * Tekmetric returns jobs under /api/v1/jobs?repairOrderId=X
  * Response is paginated in a 'content' array.
  */
-async function fetchRoJobs(token, roId) {
+async function fetchRoJobs(token, roId, shopId) {
   const pageSize = 200;
   const jobs = [];
   let page = 0;
@@ -179,6 +179,7 @@ async function fetchRoJobs(token, roId) {
   try {
     while (true) {
       const params = new URLSearchParams({
+        shop: String(shopId),
         repairOrderId: String(roId),
         page: String(page),
         size: String(pageSize)
@@ -191,19 +192,13 @@ async function fetchRoJobs(token, roId) {
 
       const pageJobs = Array.isArray(payload?.content)
         ? payload.content
-        : Array.isArray(payload)
-        ? payload
         : [];
 
       if (pageJobs.length === 0) break;
 
       jobs.push(...pageJobs);
 
-      const isLastPage = payload?.last === true;
-      const totalPages = Number(payload?.totalPages);
-
-      if (isLastPage) break;
-      if (Number.isFinite(totalPages) && page + 1 >= totalPages) break;
+      if (payload?.last === true) break;
       if (pageJobs.length < pageSize) break;
 
       page += 1;
@@ -211,11 +206,10 @@ async function fetchRoJobs(token, roId) {
 
     return jobs;
   } catch (err) {
-    console.warn("fetchRoJobs failed (non-fatal):", err.message);
+    console.warn("fetchRoJobs failed:", err.message);
     return jobs;
   }
 }
-
 
 /* ============================
    Appointment Count Helpers
@@ -363,7 +357,7 @@ app.get("/ro/:roId", async (req, res) => {
     const [customer, vehicle, jobs] = await Promise.all([
       tekmetricGet(token, `/api/v1/customers/${encodeURIComponent(ro.customerId)}`),
       tekmetricGet(token, `/api/v1/vehicles/${encodeURIComponent(ro.vehicleId)}`),
-      fetchRoJobs(token, roId)
+      fetchRoJobs(token, roId, ro.shopId)
     ]);
 
     return res.json({
