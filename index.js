@@ -456,17 +456,40 @@ app.post("/appointments", async (req, res) => {
     }
 
     const {
-      shopId,
-      customerId,
-      vehicleId,
-      title,
-      startTime,
-      endTime,
-      mileage,
-      notes,
-      purposeOfVisit,
-      appointmentType
-    } = req.body;
+  shopId,
+  customerId,
+  vehicleId,
+  title,
+  description,
+  startTime,
+  endTime,
+  mileage,
+  appointmentType
+} = req.body;
+
+const appointmentPayload = {
+  shopId,
+  customerId,
+  vehicleId,
+  title,
+  description,   // 🔥 THIS is what Tekmetric uses
+  startTime,
+  endTime,
+  color: "navy", // optional but good default
+  rideOption: "NONE",
+  status: "NONE"
+};
+
+if (mileage != null) {
+  appointmentPayload.mileage = mileage;
+}
+
+if (appointmentType === "wait") {
+  appointmentPayload.rideOption = "NONE";
+} else {
+  appointmentPayload.rideOption = "NONE";
+}
+
 
     if (!shopId || !customerId || !vehicleId || !title || !startTime || !endTime) {
       return res.status(400).json({
