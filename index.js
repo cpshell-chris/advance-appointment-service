@@ -441,7 +441,7 @@ app.get("/appointments/counts", async (req, res) => {
  * POST /appointments
  *
  * Creates an appointment in Tekmetric.
- * Now accepts: purposeOfVisit/notes, appointmentType ("dropoff" | "wait")
+ * Now accepts: appointmentType ("dropoff" | "wait")
  * in addition to the original required fields.
  */
 app.post("/appointments", async (req, res) => {
@@ -456,40 +456,15 @@ app.post("/appointments", async (req, res) => {
     }
 
     const {
-  shopId,
-  customerId,
-  vehicleId,
-  title,
-  description,
-  startTime,
-  endTime,
-  mileage,
-  appointmentType
-} = req.body;
-
-const appointmentPayload = {
-  shopId,
-  customerId,
-  vehicleId,
-  title,
-  description,   // 🔥 THIS is what Tekmetric uses
-  startTime,
-  endTime,
-  color: "navy", // optional but good default
-  rideOption: "NONE",
-  status: "NONE"
-};
-
-if (mileage != null) {
-  appointmentPayload.mileage = mileage;
-}
-
-if (appointmentType === "wait") {
-  appointmentPayload.rideOption = "NONE";
-} else {
-  appointmentPayload.rideOption = "NONE";
-}
-
+      shopId,
+      customerId,
+      vehicleId,
+      title,
+      description,
+      startTime,
+      endTime,
+      mileage
+    } = req.body;
 
     if (!shopId || !customerId || !vehicleId || !title || !startTime || !endTime) {
       return res.status(400).json({
@@ -501,36 +476,21 @@ if (appointmentType === "wait") {
 
     const token = await getAccessToken();
 
-    // Build the payload — include optional fields only if provided
     const appointmentPayload = {
       shopId,
       customerId,
       vehicleId,
       title,
+      description,
       startTime,
-      endTime
+      endTime,
+      color: "navy",
+      rideOption: "NONE",
+      status: "NONE"
     };
 
-    if (mileage != null) appointmentPayload.mileage = mileage;
-
-    const normalizedPurposeOfVisit =
-      typeof purposeOfVisit === "string" && purposeOfVisit.trim()
-        ? purposeOfVisit.trim()
-        : typeof notes === "string" && notes.trim()
-        ? notes.trim()
-        : "";
-
-    if (normalizedPurposeOfVisit) {
-      appointmentPayload.purposeOfVisit = normalizedPurposeOfVisit;
-      appointmentPayload.notes = normalizedPurposeOfVisit;
-    }
-
-    // Tekmetric uses "appointmentType" as a string — map our internal values
-    // to whatever Tekmetric expects. Adjust if their API uses different values.
-    if (appointmentType === "wait") {
-      appointmentPayload.appointmentType = "WAIT";
-    } else {
-      appointmentPayload.appointmentType = "DROP_OFF";
+    if (mileage != null) {
+      appointmentPayload.mileage = mileage;
     }
 
     const data = await tekmetricRequest(
