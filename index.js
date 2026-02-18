@@ -213,6 +213,8 @@ async function fetchRoJobs(token, roId) {
     console.warn("fetchRoJobs failed (non-fatal):", err.message);
     return jobs;
   }
+
+  return jobs;
 }
 
 /* ============================
