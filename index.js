@@ -174,31 +174,29 @@ function tekmetricGet(token, path) {
 async function fetchRoJobs(token, roId) {
   const size = 200;
   const jobs = [];
-  const seenJobIds = new Set();
+  let page = 0;
 
-  function pushUniqueJobs(rows) {
-    for (const row of rows) {
-      const key = String(row?.id ?? row?.jobId ?? row?.uuid ?? "");
-      if (key && seenJobIds.has(key)) continue;
-      if (key) seenJobIds.add(key);
-      jobs.push(row);
-    }
-  }
-
-  async function fetchPaged(pathBuilder) {
-    let page = 0;
+  try {
     while (true) {
-      const payload = await tekmetricGet(token, pathBuilder(page));
+      const params = new URLSearchParams({
+        repairOrderId: String(roId),
+        page: String(page),
+        size: String(size)
+      });
+
+      const payload = await tekmetricGet(
+        token,
+        `/api/v1/jobs?${params.toString()}`
+      );
+
       const pageJobs = Array.isArray(payload?.content)
         ? payload.content
-        : Array.isArray(payload?.data)
-        ? payload.data
         : Array.isArray(payload)
         ? payload
         : [];
 
       if (pageJobs.length === 0) break;
-      pushUniqueJobs(pageJobs);
+      jobs.push(...pageJobs);
 
       const isLastPage = payload?.last === true;
       const totalPages = Number(payload?.totalPages);
@@ -209,29 +207,11 @@ async function fetchRoJobs(token, roId) {
 
       page += 1;
     }
-  }
 
-  try {
-    await fetchPaged((page) => {
-      const params = new URLSearchParams({
-        repairOrderId: String(roId),
-        page: String(page),
-        size: String(size)
-      });
-      return `/api/v1/jobs?${params.toString()}`;
-    });
-
-    // Some tenants expose RO jobs under a nested route; keep this as a
-    // best-effort fallback to improve approved/declined service visibility.
-    await fetchPaged((page) => {
-      const params = new URLSearchParams({
-        page: String(page),
-        size: String(size)
-      });
-      return `/api/v1/repair-orders/${encodeURIComponent(roId)}/jobs?${params.toString()}`;
-    });
+    return jobs;
   } catch (err) {
     console.warn("fetchRoJobs failed (non-fatal):", err.message);
+    return jobs;
   }
 
   return jobs;
