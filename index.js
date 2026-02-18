@@ -172,19 +172,46 @@ function tekmetricGet(token, path) {
  * Response is paginated in a 'content' array.
  */
 async function fetchRoJobs(token, roId) {
+  const size = 200;
+  const jobs = [];
+  let page = 0;
+
   try {
-    const params = new URLSearchParams({ repairOrderId: String(roId) });
-    const payload = await tekmetricGet(
-      token,
-      `/api/v1/jobs?${params.toString()}`
-    );
-    // API returns paginated response with 'content' array
-    if (Array.isArray(payload?.content)) return payload.content;
-    if (Array.isArray(payload)) return payload;
-    return [];
+    while (true) {
+      const params = new URLSearchParams({
+        repairOrderId: String(roId),
+        page: String(page),
+        size: String(size)
+      });
+
+      const payload = await tekmetricGet(
+        token,
+        `/api/v1/jobs?${params.toString()}`
+      );
+
+      const pageJobs = Array.isArray(payload?.content)
+        ? payload.content
+        : Array.isArray(payload)
+        ? payload
+        : [];
+
+      if (pageJobs.length === 0) break;
+      jobs.push(...pageJobs);
+
+      const isLastPage = payload?.last === true;
+      const totalPages = Number(payload?.totalPages);
+
+      if (isLastPage) break;
+      if (Number.isFinite(totalPages) && page + 1 >= totalPages) break;
+      if (pageJobs.length < size) break;
+
+      page += 1;
+    }
+
+    return jobs;
   } catch (err) {
     console.warn("fetchRoJobs failed (non-fatal):", err.message);
-    return [];
+    return jobs;
   }
 }
 
@@ -243,25 +270,46 @@ function getRangeBounds(startDate, endDate) {
 async function fetchAppointmentsForRange(token, shopId, startDate, endDate) {
   const { startIso, endIso } = getRangeBounds(startDate, endDate);
 
-  // According to API docs, appointments use 'start' and 'end' params
-  const params = new URLSearchParams({
-    shop: String(shopId),
-    start: startIso,
-    end: endIso
-  });
+  // Tekmetric appointments endpoint is paginated; gather all pages to avoid
+  // undercounting daily totals when first page does not contain all rows.
+  const pageSize = 200;
+  const collected = [];
+  let page = 0;
 
   try {
-    const payload = await tekmetricGet(
-      token,
-      `/api/v1/appointments?${params.toString()}`
-    );
+    while (true) {
+      const params = new URLSearchParams({
+        shop: String(shopId),
+        start: startIso,
+        end: endIso,
+        page: String(page),
+        size: String(pageSize)
+      });
 
-    // API returns { content: [...] } structure
-    const list = getAppointmentsFromResponse(payload);
-    return list;
+      const payload = await tekmetricGet(
+        token,
+        `/api/v1/appointments?${params.toString()}`
+      );
+
+      const list = getAppointmentsFromResponse(payload);
+      if (list.length === 0) break;
+
+      collected.push(...list);
+
+      const isLastPage = payload?.last === true;
+      const totalPages = Number(payload?.totalPages);
+
+      if (isLastPage) break;
+      if (Number.isFinite(totalPages) && page + 1 >= totalPages) break;
+      if (list.length < pageSize) break;
+
+      page += 1;
+    }
+
+    return collected;
   } catch (err) {
     console.warn("fetchAppointmentsForRange failed:", err.message);
-    return [];
+    return collected;
   }
 }
 
@@ -397,7 +445,7 @@ app.get("/appointments/counts", async (req, res) => {
  * POST /appointments
  *
  * Creates an appointment in Tekmetric.
- * Now accepts: notes, appointmentType ("dropoff" | "wait")
+ * Now accepts: purposeOfVisit/notes, appointmentType ("dropoff" | "wait")
  * in addition to the original required fields.
  */
 app.post("/appointments", async (req, res) => {
@@ -420,6 +468,7 @@ app.post("/appointments", async (req, res) => {
       endTime,
       mileage,
       notes,
+      purposeOfVisit,
       appointmentType
     } = req.body;
 
@@ -444,7 +493,18 @@ app.post("/appointments", async (req, res) => {
     };
 
     if (mileage != null) appointmentPayload.mileage = mileage;
-    if (notes) appointmentPayload.notes = notes;
+
+    const normalizedPurposeOfVisit =
+      typeof purposeOfVisit === "string" && purposeOfVisit.trim()
+        ? purposeOfVisit.trim()
+        : typeof notes === "string" && notes.trim()
+        ? notes.trim()
+        : "";
+
+    if (normalizedPurposeOfVisit) {
+      appointmentPayload.purposeOfVisit = normalizedPurposeOfVisit;
+      appointmentPayload.notes = normalizedPurposeOfVisit;
+    }
 
     // Tekmetric uses "appointmentType" as a string — map our internal values
     // to whatever Tekmetric expects. Adjust if their API uses different values.
