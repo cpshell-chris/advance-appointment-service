@@ -549,6 +549,17 @@ process.on("uncaughtException", (err) => {
 
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 
+app.get("/debug/appointment-options", async (req, res) => {
+  try {
+    const token = await getAccessToken();
+    const data = await tekmetricGet(token, "/api/v1/appointment-options");
+    res.json(data);
+  } catch (err) {
+    console.error("Failed to fetch appointment options", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server listening on port ${PORT}`);
 });
