@@ -437,6 +437,28 @@ app.get("/appointments/counts", async (req, res) => {
   }
 });
 
+/* ============================
+   DEBUG: Fetch Single Appointment
+============================ */
+
+app.get("/debug/appointment/:id", async (req, res) => {
+  try {
+    const token = await getAccessToken();
+
+    const data = await tekmetricGet(
+      token,
+      `/api/v1/appointments/${req.params.id}`
+    );
+
+    res.json(data);
+  } catch (err) {
+    console.error("Failed to fetch appointment", err);
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Unknown error"
+    });
+  }
+});
+
 /*
  * POST /appointments
  *
