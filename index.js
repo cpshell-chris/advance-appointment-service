@@ -463,7 +463,8 @@ app.post("/appointments", async (req, res) => {
       description,
       startTime,
       endTime,
-      mileage
+      mileage,
+      appointmentType
     } = req.body;
 
     if (!shopId || !customerId || !vehicleId || !title || !startTime || !endTime) {
@@ -476,22 +477,34 @@ app.post("/appointments", async (req, res) => {
 
     const token = await getAccessToken();
 
-    const appointmentPayload = {
-      shopId,
-      customerId,
-      vehicleId,
-      title,
-      description,
-      startTime,
-      endTime,
-      color: "navy",
-      rideOption: "NONE",
-      status: "NONE"
-    };
+    // Determine Tekmetric appointment option
+let appointmentOption = undefined;
 
-    if (mileage != null) {
-      appointmentPayload.mileage = mileage;
-    }
+if (appointmentType === "dropoff") {
+  appointmentOption = { code: "DROP" };
+} else if (appointmentType === "wait") {
+  appointmentOption = { code: "STAY" };
+}
+
+const appointmentPayload = {
+  shopId,
+  customerId,
+  vehicleId,
+  title,
+  description,
+  startTime,
+  endTime,
+  color: "navy",
+  rideOption: { code: "NONE" },
+  status: "NONE",
+  appointmentOption
+};
+
+if (mileage != null) {
+  appointmentPayload.mileage = mileage;
+}
+console.log("APPOINTMENT PAYLOAD BEING SENT:");
+console.log(JSON.stringify(appointmentPayload, null, 2));
 
     const data = await tekmetricRequest(
       token,
