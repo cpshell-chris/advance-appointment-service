@@ -502,12 +502,16 @@ app.post("/appointments", async (req, res) => {
     // Determine Tekmetric appointment option
 let appointmentOption = undefined;
 
-let appointmentOptionId = undefined;
+let appointmentOption = undefined;
+let dropoffTime = undefined;
+let pickupTime = undefined;
 
 if (appointmentType === "dropoff") {
-  appointmentOptionId = 2;   // DROP
+  appointmentOption = { id: 2 };   // DROP
+  dropoffTime = startTime;
+  pickupTime = endTime;
 } else if (appointmentType === "wait") {
-  appointmentOptionId = 1;   // STAY
+  appointmentOption = { id: 1 };   // STAY
 }
 
 const appointmentPayload = {
@@ -521,7 +525,9 @@ const appointmentPayload = {
   color: "navy",
   rideOption: "NONE",
   status: "NONE",
-  appointmentOptionId
+  appointmentOption,
+  dropoffTime,
+  pickupTime
 };
 
 if (mileage != null) {
