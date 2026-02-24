@@ -449,44 +449,69 @@ app.get("/vehicle-history/:vehicleId", async (req, res) => {
       shopId
     );
 
-    const mileageTimeline = [];
+    // ---- Build mileage timeline ----
+let rawTimeline = [];
 
-    for (const ro of repairOrders) {
-      const date =
-        ro.completedDate ||
-        ro.closedDate ||
-        ro.createdDate ||
-        null;
+for (const ro of repairOrders) {
+  const date =
+    ro.completedDate ||
+    ro.closedDate ||
+    ro.createdDate ||
+    null;
 
-      const mileage = ro.milesOut ?? ro.milesIn ?? null;
+  const mileage = ro.milesOut ?? ro.milesIn ?? null;
 
-      if (date && Number.isFinite(Number(mileage))) {
-        mileageTimeline.push({
-          date,
-          mileage: Number(mileage)
-        });
-      }
-    }
+  if (!date) continue;
+  if (!Number.isFinite(Number(mileage))) continue;
 
-    mileageTimeline.sort(
-      (a, b) => new Date(a.date) - new Date(b.date)
-    );
+  const numericMileage = Number(mileage);
 
-    let avgMilesPerDay = null;
+  // Ignore zero or clearly invalid mileage
+  if (numericMileage <= 0) continue;
 
-    if (mileageTimeline.length >= 2) {
-      const first = mileageTimeline[0];
-      const last = mileageTimeline[mileageTimeline.length - 1];
+  rawTimeline.push({
+    date,
+    mileage: numericMileage
+  });
+}
 
-      const milesDelta = last.mileage - first.mileage;
-      const daysDelta =
-        (new Date(last.date) - new Date(first.date)) /
-        (1000 * 60 * 60 * 24);
+// Sort chronologically
+rawTimeline.sort(
+  (a, b) => new Date(a.date) - new Date(b.date)
+);
 
-      if (daysDelta > 0 && milesDelta > 0) {
-        avgMilesPerDay = milesDelta / daysDelta;
-      }
-    }
+// Remove mileage regressions (only keep forward movement)
+const mileageTimeline = [];
+
+for (const entry of rawTimeline) {
+  if (mileageTimeline.length === 0) {
+    mileageTimeline.push(entry);
+    continue;
+  }
+
+  const lastValid = mileageTimeline[mileageTimeline.length - 1];
+
+  if (entry.mileage >= lastValid.mileage) {
+    mileageTimeline.push(entry);
+  }
+}
+
+// ---- Calculate average miles per day using first & last valid ----
+let avgMilesPerDay = null;
+
+if (mileageTimeline.length >= 2) {
+  const first = mileageTimeline[0];
+  const last = mileageTimeline[mileageTimeline.length - 1];
+
+  const milesDelta = last.mileage - first.mileage;
+  const daysDelta =
+    (new Date(last.date) - new Date(first.date)) /
+    (1000 * 60 * 60 * 24);
+
+  if (daysDelta > 0 && milesDelta > 0) {
+    avgMilesPerDay = milesDelta / daysDelta;
+  }
+}
 
     return res.json({
       success: true,
