@@ -401,6 +401,7 @@ app.get("/appointments/counts", async (req, res) => {
     }
 
     const token = await getAccessToken();
+    console.log("Access token:", token);
     const appointments = await fetchAppointmentsForRange(
       token,
       shopId,
