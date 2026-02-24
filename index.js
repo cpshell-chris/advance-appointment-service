@@ -495,7 +495,7 @@ const appointmentPayload = {
   startTime,
   endTime,
   color: "navy",
-  rideOption: { code: "NONE" },
+  rideOption: "NONE",
   status: "NONE",
   appointmentOption
 };
