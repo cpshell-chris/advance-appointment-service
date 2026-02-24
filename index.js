@@ -464,8 +464,11 @@ app.post("/appointments", async (req, res) => {
       startTime,
       endTime,
       mileage,
-      appointmentType
+      appointmentType,
+      color
     } = req.body;
+
+const appointmentColor = color || "#0D4A80";
 
     if (!shopId || !customerId || !vehicleId || !title || !startTime || !endTime) {
       return res.status(400).json({
@@ -504,7 +507,8 @@ const appointmentPayload = {
   status: "NONE",
   appointmentOption,
   dropoffTime,
-  pickupTime
+  pickupTime,
+  color: appointmentColor
 };
 
 if (mileage != null) {
@@ -553,17 +557,6 @@ process.on("uncaughtException", (err) => {
 ============================ */
 
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
-
-app.get("/debug/appointment-options", async (req, res) => {
-  try {
-    const token = await getAccessToken();
-    const data = await tekmetricGet(token, "/api/v1/appointment-options");
-    res.json(data);
-  } catch (err) {
-    console.error("Failed to fetch appointment options", err);
-    res.status(500).json({ error: err.message });
-  }
-});
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server listening on port ${PORT}`);
