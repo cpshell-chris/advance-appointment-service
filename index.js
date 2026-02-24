@@ -500,7 +500,6 @@ app.post("/appointments", async (req, res) => {
     const token = await getAccessToken();
 
     // Determine Tekmetric appointment option
-let appointmentOption = undefined;
 
 let appointmentOption = undefined;
 let dropoffTime = undefined;
