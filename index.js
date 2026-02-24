@@ -469,8 +469,7 @@ app.post("/appointments", async (req, res) => {
       color
     } = req.body;
 
-const appointmentColor = color || "#0D4A80";
-
+const appointmentColor = typeof color === "string" && color.trim() ? color.trim() : "navy";
     if (!shopId || !customerId || !vehicleId || !title || !startTime || !endTime) {
       return res.status(400).json({
         success: false,
@@ -503,13 +502,12 @@ const appointmentPayload = {
   description,
   startTime,
   endTime,
-  color: "navy",
+  color: appointmentColor,
   rideOption: "NONE",
   status: "NONE",
   appointmentOption,
   dropoffTime,
-  pickupTime,
-  color: appointmentColor
+  pickupTime
 };
 
 if (mileage != null) {
