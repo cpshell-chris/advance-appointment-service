@@ -211,6 +211,46 @@ async function fetchRoJobs(token, roId, shopId) {
   }
 }
 
+async function fetchVehicleRepairOrders(token, vehicleId, shopId) {
+  const pageSize = 200;
+  const ros = [];
+  let page = 0;
+
+  try {
+    while (true) {
+      const params = new URLSearchParams({
+        shop: String(shopId),
+        vehicleId: String(vehicleId),
+        page: String(page),
+        size: String(pageSize)
+      });
+
+      const payload = await tekmetricGet(
+        token,
+        `/api/v1/repair-orders?${params.toString()}`
+      );
+
+      const pageRos = Array.isArray(payload?.content)
+        ? payload.content
+        : [];
+
+      if (pageRos.length === 0) break;
+
+      ros.push(...pageRos);
+
+      if (payload?.last === true) break;
+      if (pageRos.length < pageSize) break;
+
+      page += 1;
+    }
+
+    return ros;
+  } catch (err) {
+    console.warn("fetchVehicleRepairOrders failed:", err.message);
+    return ros;
+  }
+}
+
 /* ============================
    Appointment Count Helpers
 ============================ */
@@ -373,6 +413,89 @@ app.get("/ro/:roId", async (req, res) => {
     });
   } catch (err) {
     console.error("/ro/:roId error", err);
+    return res.status(500).json({
+      success: false,
+      message: err instanceof Error ? err.message : "Internal server error"
+    });
+  }
+});
+
+app.get("/vehicle-history/:vehicleId", async (req, res) => {
+  try {
+    const config = validateTekmetricConfig();
+    if (!config.ok) {
+      return res.status(503).json({
+        success: false,
+        message: "Service not fully configured",
+        missingEnvVars: config.missing
+      });
+    }
+
+    const { vehicleId } = req.params;
+    const { shopId } = req.query;
+
+    if (!vehicleId || !shopId) {
+      return res.status(400).json({
+        success: false,
+        message: "vehicleId and shopId are required"
+      });
+    }
+
+    const token = await getAccessToken();
+
+    const repairOrders = await fetchVehicleRepairOrders(
+      token,
+      vehicleId,
+      shopId
+    );
+
+    const mileageTimeline = [];
+
+    for (const ro of repairOrders) {
+      const date =
+        ro.completedDate ||
+        ro.closedDate ||
+        ro.createdDate ||
+        null;
+
+      const mileage = ro.milesOut ?? ro.milesIn ?? null;
+
+      if (date && Number.isFinite(Number(mileage))) {
+        mileageTimeline.push({
+          date,
+          mileage: Number(mileage)
+        });
+      }
+    }
+
+    mileageTimeline.sort(
+      (a, b) => new Date(a.date) - new Date(b.date)
+    );
+
+    let avgMilesPerDay = null;
+
+    if (mileageTimeline.length >= 2) {
+      const first = mileageTimeline[0];
+      const last = mileageTimeline[mileageTimeline.length - 1];
+
+      const milesDelta = last.mileage - first.mileage;
+      const daysDelta =
+        (new Date(last.date) - new Date(first.date)) /
+        (1000 * 60 * 60 * 24);
+
+      if (daysDelta > 0 && milesDelta > 0) {
+        avgMilesPerDay = milesDelta / daysDelta;
+      }
+    }
+
+    return res.json({
+      success: true,
+      vehicleId,
+      mileageTimeline,
+      avgMilesPerDay
+    });
+  } catch (err) {
+    console.error("/vehicle-history error", err);
     return res.status(500).json({
       success: false,
       message: err instanceof Error ? err.message : "Internal server error"
