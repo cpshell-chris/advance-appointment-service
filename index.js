@@ -498,6 +498,7 @@ for (const entry of rawTimeline) {
 
 // ---- Calculate average miles per day using first & last valid ----
 let avgMilesPerDay = null;
+let historySpanDays = null;
 
 if (mileageTimeline.length >= 2) {
   const first = mileageTimeline[0];
@@ -510,15 +511,18 @@ if (mileageTimeline.length >= 2) {
 
   if (daysDelta > 0 && milesDelta > 0) {
     avgMilesPerDay = milesDelta / daysDelta;
+    historySpanDays = Math.round(daysDelta);
   }
 }
 
-    return res.json({
-      success: true,
-      vehicleId,
-      mileageTimeline,
-      avgMilesPerDay
-    });
+    res.json({
+  success: true,
+  vehicleId,
+  mileageTimeline,
+  avgMilesPerDay,
+  dataPointCount: mileageTimeline.length,
+  historySpanDays
+});
   } catch (err) {
     console.error("/vehicle-history error", err);
     return res.status(500).json({
