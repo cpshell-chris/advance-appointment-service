@@ -243,6 +243,9 @@
       appointmentCounts: {},
       appointmentCountWeekKey: null,
       appointmentCountsLoading: false,
+      timeSlotCounts: { dropoff: {}, wait: {} },
+      timeSlotCountsDateKey: null,
+      timeSlotCountsLoading: false,
       vehicleAvgMilesPerDay: null,
       vehicleDataPointCount: 0,
       vehicleHistorySpanDays: null,
@@ -295,6 +298,9 @@
     next.appointmentCounts = rawState.appointmentCounts ?? {};
     next.appointmentCountWeekKey = rawState.appointmentCountWeekKey ?? null;
     next.appointmentCountsLoading = false;
+    next.timeSlotCounts = rawState.timeSlotCounts ?? { dropoff: {}, wait: {} };
+    next.timeSlotCountsDateKey = rawState.timeSlotCountsDateKey ?? null;
+    next.timeSlotCountsLoading = false;
     next.hasUserSelectedMonthInterval = rawState.hasUserSelectedMonthInterval === true;
     next.repeatServices = Array.isArray(rawState.repeatServices)
       ? rawState.repeatServices
@@ -382,6 +388,98 @@
       return result.counts;
     } catch {
       return {};
+    }
+  }
+
+  function normalizeTimeCountResponse(result, selectedDate) {
+    const normalized = { dropoff: {}, wait: {} };
+    if (!result || typeof result !== "object") return normalized;
+
+    const dateKey = getDateKey(selectedDate);
+    const source = result.timeCounts ?? result.counts ?? result;
+    const scoped = source?.[dateKey] ?? source;
+
+    const readHourFromKey = (rawKey) => {
+      const text = String(rawKey ?? "").trim();
+      if (!text) return null;
+
+      if (text.includes("T")) {
+        const parsedDate = new Date(text);
+        if (!Number.isNaN(parsedDate.getTime())) return parsedDate.getHours();
+      }
+
+      const ampmMatch = text.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+      if (ampmMatch) {
+        const hour12 = Number(ampmMatch[1]);
+        const suffix = ampmMatch[3].toUpperCase();
+        const normalizedHour = hour12 % 12;
+        return suffix === "PM" ? normalizedHour + 12 : normalizedHour;
+      }
+
+      const hourFirstMatch = text.match(/^(\d{1,2})(?::\d{2})?$/);
+      if (hourFirstMatch) {
+        const hour = Number(hourFirstMatch[1]);
+        return Number.isFinite(hour) ? hour : null;
+      }
+
+      const isoHourMatch = text.match(/T(\d{2}):\d{2}/);
+      if (isoHourMatch) return Number(isoHourMatch[1]);
+
+      return null;
+    };
+
+    const applyCountMap = (type, map) => {
+      if (!map || typeof map !== "object") return;
+      Object.entries(map).forEach(([hourKey, count]) => {
+        const hour = readHourFromKey(hourKey);
+        if (!Number.isInteger(hour) || hour < 0 || hour > 23) return;
+        normalized[type][hour] = (normalized[type][hour] || 0) + (Number(count) || 0);
+      });
+    };
+
+    applyCountMap("dropoff", scoped?.dropoff ?? scoped?.dropOff);
+    applyCountMap("wait", scoped?.wait ?? scoped?.waiter);
+
+    if (!Object.keys(normalized.dropoff).length && !Object.keys(normalized.wait).length) {
+      applyCountMap("dropoff", scoped);
+    }
+
+    return normalized;
+  }
+
+  async function fetchTimeSlotCounts(shopId, selectedDate) {
+    const baseParams = {
+      shopId: String(shopId),
+      startDate: getDateKey(selectedDate),
+      endDate: getDateKey(selectedDate)
+    };
+
+    const requestCounts = async (extraParams = {}) => {
+      const params = new URLSearchParams({ ...baseParams, ...extraParams });
+      const response = await fetch(`${CLOUD_RUN_URL}/appointments/counts?${params.toString()}`);
+      if (!response.ok) return null;
+      const result = await response.json();
+      if (!result.success) return null;
+      return normalizeTimeCountResponse(result, selectedDate);
+    };
+
+    try {
+      const grouped = await requestCounts({ groupBy: "hour", includeTypes: "1" });
+      if (grouped && (Object.keys(grouped.dropoff).length || Object.keys(grouped.wait).length)) {
+        return grouped;
+      }
+
+      const [dropoff, wait] = await Promise.all([
+        requestCounts({ groupBy: "hour", appointmentType: "dropoff" }),
+        requestCounts({ groupBy: "hour", appointmentType: "wait" })
+      ]);
+
+      return {
+        dropoff: dropoff?.dropoff ?? {},
+        wait: wait?.wait ?? {}
+      };
+    } catch {
+      return { dropoff: {}, wait: {} };
     }
   }
 
@@ -865,9 +963,12 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
       .aa-toggle-btn:hover { border-color: #C0C0D0; }
       .aa-toggle-btn.active { background: #1A1A2E; border-color: #1A1A2E; color: #fff; font-weight: 600; }
       .aa-time-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
-      .aa-time-btn { padding: 8px 4px; border: 1px solid #E0E0E8; border-radius: 7px; background: #fff; cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 500; color: #5B5B76; text-align: center; transition: all 0.15s ease; }
+      .aa-time-btn { padding: 7px 4px 6px; border: 1px solid #E0E0E8; border-radius: 7px; background: #fff; cursor: pointer; font-family: inherit; color: #5B5B76; text-align: center; transition: all 0.15s ease; display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
+      .aa-time-label { font-size: 11.5px; font-weight: 500; }
+      .aa-time-booked { margin-top: 2px; font-size: 10px; font-weight: 500; color: #8A8AA3; }
       .aa-time-btn:hover { border-color: #C0C0D0; }
       .aa-time-btn.active { background: #1A1A2E; border-color: #1A1A2E; color: #fff; font-weight: 600; }
+      .aa-time-btn.active .aa-time-booked { color: rgba(255, 255, 255, 0.85); }
       .aa-check-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #E8E8EC; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 5px; transition: all 0.15s ease; }
       .aa-check-item:last-child { margin-bottom: 0; }
       .aa-check-item:hover { border-color: #D0D0DD; }
@@ -1207,6 +1308,36 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
     persistPanelState();
   }
 
+  function loadTimeSlotCountsForSelectedDate(panel) {
+    const selectedDate = panelState.appointment.date;
+    const shopId = panelState.roData?.shopId;
+    if (!selectedDate || !shopId) return;
+
+    const selectedDateKey = getDateKey(selectedDate);
+    if (panelState.timeSlotCountsDateKey === selectedDateKey || panelState.timeSlotCountsLoading) {
+      return;
+    }
+
+    panelState.timeSlotCountsLoading = true;
+
+    fetchTimeSlotCounts(shopId, selectedDate)
+      .then((counts) => {
+        panelState.timeSlotCounts = counts;
+        panelState.timeSlotCountsDateKey = selectedDateKey;
+      })
+      .catch(() => {
+        panelState.timeSlotCounts = { dropoff: {}, wait: {} };
+        panelState.timeSlotCountsDateKey = selectedDateKey;
+      })
+      .finally(() => {
+        panelState.timeSlotCountsLoading = false;
+        persistPanelState();
+        if (panelState.screen === 2 && panel && panel.isConnected) {
+          renderScreen2(panel);
+        }
+      });
+  }
+
   function renderScreen2(panel) {
     panelState.screen = 2;
     const roData = panelState.roData;
@@ -1233,6 +1364,7 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
           <div class="aa-section">
             <div class="aa-section-label">Time</div>
             <div class="aa-time-grid" id="aa-time-grid"></div>
+            <div class="aa-help" id="aa-time-counts-status"></div>
           </div>
 
           <div class="aa-section">
@@ -1306,11 +1438,19 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
       renderScreen2(panel);
     };
 
+    loadTimeSlotCountsForSelectedDate(panel);
+
     const timeGrid = document.getElementById("aa-time-grid");
+    const activeTypeCounts = panelState.timeSlotCounts?.[panelState.appointment.type] ?? {};
+
     getHourlyTimeOptions().forEach((hour) => {
       const btn = document.createElement("button");
+      const bookedCount = activeTypeCounts[hour] ?? 0;
       btn.className = `aa-time-btn ${hour === panelState.appointment.hour ? "active" : ""}`;
-      btn.textContent = formatHourLabel(hour);
+      btn.innerHTML = `
+        <span class="aa-time-label">${formatHourLabel(hour)}</span>
+        <span class="aa-time-booked">${bookedCount} booked</span>
+      `;
       btn.onclick = () => {
         panelState.appointment.hour = hour;
         persistPanelState();
@@ -1318,6 +1458,11 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
       };
       timeGrid.appendChild(btn);
     });
+
+    const timeCountStatus = document.getElementById("aa-time-counts-status");
+    if (timeCountStatus) {
+      timeCountStatus.textContent = panelState.timeSlotCountsLoading ? "Loading scheduler counts…" : "";
+    }
 
     function setupCheckList(containerId, stateKey) {
       const container = document.getElementById(containerId);
