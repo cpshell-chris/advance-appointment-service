@@ -399,12 +399,41 @@
     const source = result.timeCounts ?? result.counts ?? result;
     const scoped = source?.[dateKey] ?? source;
 
+    const readHourFromKey = (rawKey) => {
+      const text = String(rawKey ?? "").trim();
+      if (!text) return null;
+
+      if (text.includes("T")) {
+        const parsedDate = new Date(text);
+        if (!Number.isNaN(parsedDate.getTime())) return parsedDate.getHours();
+      }
+
+      const ampmMatch = text.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+      if (ampmMatch) {
+        const hour12 = Number(ampmMatch[1]);
+        const suffix = ampmMatch[3].toUpperCase();
+        const normalizedHour = hour12 % 12;
+        return suffix === "PM" ? normalizedHour + 12 : normalizedHour;
+      }
+
+      const hourFirstMatch = text.match(/^(\d{1,2})(?::\d{2})?$/);
+      if (hourFirstMatch) {
+        const hour = Number(hourFirstMatch[1]);
+        return Number.isFinite(hour) ? hour : null;
+      }
+
+      const isoHourMatch = text.match(/T(\d{2}):\d{2}/);
+      if (isoHourMatch) return Number(isoHourMatch[1]);
+
+      return null;
+    };
+
     const applyCountMap = (type, map) => {
       if (!map || typeof map !== "object") return;
       Object.entries(map).forEach(([hourKey, count]) => {
-        const hour = Number.parseInt(String(hourKey).slice(0, 2), 10);
-        if (!Number.isFinite(hour)) return;
-        normalized[type][hour] = Number(count) || 0;
+        const hour = readHourFromKey(hourKey);
+        if (!Number.isInteger(hour) || hour < 0 || hour > 23) return;
+        normalized[type][hour] = (normalized[type][hour] || 0) + (Number(count) || 0);
       });
     };
 
@@ -418,7 +447,118 @@
     return normalized;
   }
 
+
+  function getAppointmentTypeKey(appointment) {
+    const rawType = String(
+      appointment?.appointmentType ??
+      appointment?.type ??
+      appointment?.appointment_type ??
+      appointment?.visitType ??
+      ""
+    ).toLowerCase();
+
+    if (rawType.includes("wait")) return "wait";
+    return "dropoff";
+  }
+
+  function getAppointmentStartDate(appointment) {
+    const rawStart =
+      appointment?.startTime ??
+      appointment?.startDate ??
+      appointment?.start ??
+      appointment?.startsAt ??
+      appointment?.start_at ??
+      null;
+
+    if (!rawStart) return null;
+    const parsed = new Date(rawStart);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed;
+  }
+
+  function normalizeAppointmentListCounts(items, selectedDate) {
+    const normalized = { dropoff: {}, wait: {} };
+    if (!Array.isArray(items)) return normalized;
+
+    const selectedKey = getDateKey(selectedDate);
+
+    items.forEach((appointment) => {
+      const startDate = getAppointmentStartDate(appointment);
+      if (!startDate || getDateKey(startDate) !== selectedKey) return;
+
+      const hour = startDate.getHours();
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) return;
+
+      const typeKey = getAppointmentTypeKey(appointment);
+      normalized[typeKey][hour] = (normalized[typeKey][hour] || 0) + 1;
+    });
+
+    return normalized;
+  }
+
+  function mergeTimeCounts(primary, fallback) {
+    const merged = { dropoff: {}, wait: {} };
+
+    ["dropoff", "wait"].forEach((type) => {
+      const first = primary?.[type] ?? {};
+      const second = fallback?.[type] ?? {};
+      const keys = new Set([...Object.keys(first), ...Object.keys(second)]);
+      keys.forEach((key) => {
+        const total = Number(first[key] || 0) + Number(second[key] || 0);
+        if (total > 0) merged[type][key] = total;
+      });
+    });
+
+    return merged;
+  }
+
+  async function fetchTimeSlotCountsFromAppointments(shopId, selectedDate) {
+    const baseParams = {
+      shopId: String(shopId),
+      startDate: getDateKey(selectedDate),
+      endDate: getDateKey(selectedDate)
+    };
+
+    const requestList = async (extraParams = {}) => {
+      const params = new URLSearchParams({ ...baseParams, ...extraParams });
+      const response = await fetch(`${CLOUD_RUN_URL}/appointments?${params.toString()}`);
+      if (!response.ok) return null;
+      const result = await response.json();
+
+      const items =
+        result?.appointments ??
+        result?.data?.appointments ??
+        result?.data ??
+        result?.results ??
+        null;
+
+      if (!Array.isArray(items)) return null;
+      return normalizeAppointmentListCounts(items, selectedDate);
+    };
+
+    try {
+      const combined = await requestList();
+      if (combined && (Object.keys(combined.dropoff).length || Object.keys(combined.wait).length)) {
+        return combined;
+      }
+
+      const [wait, dropoff] = await Promise.all([
+        requestList({ appointmentType: "wait" }) ?? Promise.resolve(null),
+        requestList({ appointmentType: "dropoff" }) ?? Promise.resolve(null)
+      ]);
+
+      return mergeTimeCounts(wait, dropoff);
+    } catch {
+      return { dropoff: {}, wait: {} };
+    }
+  }
+
   async function fetchTimeSlotCounts(shopId, selectedDate) {
+    const fromAppointments = await fetchTimeSlotCountsFromAppointments(shopId, selectedDate);
+    if (Object.keys(fromAppointments.dropoff).length || Object.keys(fromAppointments.wait).length) {
+      return fromAppointments;
+    }
+
     const baseParams = {
       shopId: String(shopId),
       startDate: getDateKey(selectedDate),
@@ -440,14 +580,15 @@
         return grouped;
       }
 
-      const [dropoff, wait] = await Promise.all([
+      const [dropoff, wait, waiter] = await Promise.all([
         requestCounts({ groupBy: "hour", appointmentType: "dropoff" }),
-        requestCounts({ groupBy: "hour", appointmentType: "wait" })
+        requestCounts({ groupBy: "hour", appointmentType: "wait" }),
+        requestCounts({ groupBy: "hour", appointmentType: "waiter" })
       ]);
 
       return {
         dropoff: dropoff?.dropoff ?? {},
-        wait: wait?.wait ?? {}
+        wait: mergeTimeCounts(wait, waiter).wait
       };
     } catch {
       return { dropoff: {}, wait: {} };
