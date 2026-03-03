@@ -7,7 +7,6 @@
 
   const PANEL_ID = "aa-fixed-panel";
   const STYLE_ID = "aa-fixed-style";
-  const PAGE_SHELL_ID = "aa-page-shell";
   const PANEL_WIDTH = 380;
   const PANEL_MOTION_MS = 520;
   const PANEL_FADE_MS = 420;
@@ -243,6 +242,9 @@
       appointmentCounts: {},
       appointmentCountWeekKey: null,
       appointmentCountsLoading: false,
+      timeSlotCounts: { dropoff: {}, wait: {} },
+      timeSlotCountsDateKey: null,
+      timeSlotCountsLoading: false,
       vehicleAvgMilesPerDay: null,
       vehicleDataPointCount: 0,
       vehicleHistorySpanDays: null,
@@ -295,6 +297,9 @@
     next.appointmentCounts = rawState.appointmentCounts ?? {};
     next.appointmentCountWeekKey = rawState.appointmentCountWeekKey ?? null;
     next.appointmentCountsLoading = false;
+    next.timeSlotCounts = rawState.timeSlotCounts ?? { dropoff: {}, wait: {} };
+    next.timeSlotCountsDateKey = rawState.timeSlotCountsDateKey ?? null;
+    next.timeSlotCountsLoading = false;
     next.hasUserSelectedMonthInterval = rawState.hasUserSelectedMonthInterval === true;
     next.repeatServices = Array.isArray(rawState.repeatServices)
       ? rawState.repeatServices
@@ -382,6 +387,210 @@
       return result.counts;
     } catch {
       return {};
+    }
+  }
+
+  function normalizeTimeCountResponse(result, selectedDate) {
+    const normalized = { dropoff: {}, wait: {} };
+    if (!result || typeof result !== "object") return normalized;
+
+    const dateKey = getDateKey(selectedDate);
+    const source = result.timeCounts ?? result.counts ?? result;
+    const scoped = source?.[dateKey] ?? source;
+
+    const readHourFromKey = (rawKey) => {
+      const text = String(rawKey ?? "").trim();
+      if (!text) return null;
+
+      if (text.includes("T")) {
+        const parsedDate = new Date(text);
+        if (!Number.isNaN(parsedDate.getTime())) return parsedDate.getHours();
+      }
+
+      const ampmMatch = text.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+      if (ampmMatch) {
+        const hour12 = Number(ampmMatch[1]);
+        const suffix = ampmMatch[3].toUpperCase();
+        const normalizedHour = hour12 % 12;
+        return suffix === "PM" ? normalizedHour + 12 : normalizedHour;
+      }
+
+      const hourFirstMatch = text.match(/^(\d{1,2})(?::\d{2})?$/);
+      if (hourFirstMatch) {
+        const hour = Number(hourFirstMatch[1]);
+        return Number.isFinite(hour) ? hour : null;
+      }
+
+      const isoHourMatch = text.match(/T(\d{2}):\d{2}/);
+      if (isoHourMatch) return Number(isoHourMatch[1]);
+
+      return null;
+    };
+
+    const applyCountMap = (type, map) => {
+      if (!map || typeof map !== "object") return;
+      Object.entries(map).forEach(([hourKey, count]) => {
+        const hour = readHourFromKey(hourKey);
+        if (!Number.isInteger(hour) || hour < 0 || hour > 23) return;
+        normalized[type][hour] = (normalized[type][hour] || 0) + (Number(count) || 0);
+      });
+    };
+
+    applyCountMap("dropoff", scoped?.dropoff ?? scoped?.dropOff);
+    applyCountMap("wait", scoped?.wait ?? scoped?.waiter);
+
+    if (!Object.keys(normalized.dropoff).length && !Object.keys(normalized.wait).length) {
+      applyCountMap("dropoff", scoped);
+    }
+
+    return normalized;
+  }
+
+
+  function getAppointmentTypeKey(appointment) {
+    const rawType = String(
+      appointment?.appointmentType ??
+      appointment?.type ??
+      appointment?.appointment_type ??
+      appointment?.visitType ??
+      ""
+    ).toLowerCase();
+
+    if (rawType.includes("wait")) return "wait";
+    return "dropoff";
+  }
+
+  function getAppointmentStartDate(appointment) {
+    const rawStart =
+      appointment?.startTime ??
+      appointment?.startDate ??
+      appointment?.start ??
+      appointment?.startsAt ??
+      appointment?.start_at ??
+      null;
+
+    if (!rawStart) return null;
+    const parsed = new Date(rawStart);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed;
+  }
+
+  function normalizeAppointmentListCounts(items, selectedDate) {
+    const normalized = { dropoff: {}, wait: {} };
+    if (!Array.isArray(items)) return normalized;
+
+    const selectedKey = getDateKey(selectedDate);
+
+    items.forEach((appointment) => {
+      const startDate = getAppointmentStartDate(appointment);
+      if (!startDate || getDateKey(startDate) !== selectedKey) return;
+
+      const hour = startDate.getHours();
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) return;
+
+      const typeKey = getAppointmentTypeKey(appointment);
+      normalized[typeKey][hour] = (normalized[typeKey][hour] || 0) + 1;
+    });
+
+    return normalized;
+  }
+
+  function mergeTimeCounts(primary, fallback) {
+    const merged = { dropoff: {}, wait: {} };
+
+    ["dropoff", "wait"].forEach((type) => {
+      const first = primary?.[type] ?? {};
+      const second = fallback?.[type] ?? {};
+      const keys = new Set([...Object.keys(first), ...Object.keys(second)]);
+      keys.forEach((key) => {
+        const total = Number(first[key] || 0) + Number(second[key] || 0);
+        if (total > 0) merged[type][key] = total;
+      });
+    });
+
+    return merged;
+  }
+
+  async function fetchTimeSlotCountsFromAppointments(shopId, selectedDate) {
+    const baseParams = {
+      shopId: String(shopId),
+      startDate: getDateKey(selectedDate),
+      endDate: getDateKey(selectedDate)
+    };
+
+    const requestList = async (extraParams = {}) => {
+      const params = new URLSearchParams({ ...baseParams, ...extraParams });
+      const response = await fetch(`${CLOUD_RUN_URL}/appointments?${params.toString()}`);
+      if (!response.ok) return null;
+      const result = await response.json();
+
+      const items =
+        result?.appointments ??
+        result?.data?.appointments ??
+        result?.data ??
+        result?.results ??
+        null;
+
+      if (!Array.isArray(items)) return null;
+      return normalizeAppointmentListCounts(items, selectedDate);
+    };
+
+    try {
+      const combined = await requestList();
+      if (combined && (Object.keys(combined.dropoff).length || Object.keys(combined.wait).length)) {
+        return combined;
+      }
+
+      const [wait, dropoff] = await Promise.all([
+        requestList({ appointmentType: "wait" }) ?? Promise.resolve(null),
+        requestList({ appointmentType: "dropoff" }) ?? Promise.resolve(null)
+      ]);
+
+      return mergeTimeCounts(wait, dropoff);
+    } catch {
+      return { dropoff: {}, wait: {} };
+    }
+  }
+
+  async function fetchTimeSlotCounts(shopId, selectedDate) {
+    const fromAppointments = await fetchTimeSlotCountsFromAppointments(shopId, selectedDate);
+    if (Object.keys(fromAppointments.dropoff).length || Object.keys(fromAppointments.wait).length) {
+      return fromAppointments;
+    }
+
+    const baseParams = {
+      shopId: String(shopId),
+      startDate: getDateKey(selectedDate),
+      endDate: getDateKey(selectedDate)
+    };
+
+    const requestCounts = async (extraParams = {}) => {
+      const params = new URLSearchParams({ ...baseParams, ...extraParams });
+      const response = await fetch(`${CLOUD_RUN_URL}/appointments/counts?${params.toString()}`);
+      if (!response.ok) return null;
+      const result = await response.json();
+      if (!result.success) return null;
+      return normalizeTimeCountResponse(result, selectedDate);
+    };
+
+    try {
+      const grouped = await requestCounts({ groupBy: "hour", includeTypes: "1" });
+      if (grouped && (Object.keys(grouped.dropoff).length || Object.keys(grouped.wait).length)) {
+        return grouped;
+      }
+
+      const [dropoff, wait, waiter] = await Promise.all([
+        requestCounts({ groupBy: "hour", appointmentType: "dropoff" }),
+        requestCounts({ groupBy: "hour", appointmentType: "wait" }),
+        requestCounts({ groupBy: "hour", appointmentType: "waiter" })
+      ]);
+
+      return {
+        dropoff: dropoff?.dropoff ?? {},
+        wait: mergeTimeCounts(wait, waiter).wait
+      };
+    } catch {
+      return { dropoff: {}, wait: {} };
     }
   }
 
@@ -525,112 +734,56 @@
     return job?.name ?? job?.title ?? job?.description ?? "Unnamed Service";
   }
 
-  function applyShiftToNode(node, shift) {
-  if (!(node instanceof HTMLElement)) return;
-  if (node.dataset.aaShifted === "1") return;
-
-  const style = window.getComputedStyle(node);
-  const rect = node.getBoundingClientRect();
-
-  const isTopFixedHeader =
-    (style.position === "fixed" || style.position === "sticky") &&
-    rect.top <= 2 &&
-    rect.height >= 36 &&
-    rect.height <= 200 &&
-    rect.width >= window.innerWidth * 0.45;
-
-  node.dataset.aaShifted = "1";
-
-  // ✅ Shrink top header bars instead of pushing them
-  if (isTopFixedHeader) {
-    node.dataset.aaShiftMode = "shrink";
-
-    node.dataset.aaOriginalLeft = node.style.left || "";
-    node.dataset.aaOriginalRight = node.style.right || "";
-    node.dataset.aaOriginalWidth = node.style.width || "";
-    node.dataset.aaOriginalMaxWidth = node.style.maxWidth || "";
-
-    // Key fix for Tekmetric header: override left-auto/right-0/w-full behavior
-    node.style.left = "0px";
-    node.style.right = `${shift}px`;
-    node.style.width = "auto";
-    node.style.maxWidth = "none";
-    return;
+  function getShiftTargets() {
+    return [
+      document.getElementById("root"),
+      document.querySelector(".MuiDrawer-paperAnchorRight"),
+      document.querySelector("#kt_app_sidebar")
+    ].filter((el) => el instanceof HTMLElement);
   }
 
-  // ✅ Normal elements: push left by increasing margin-right
-  node.dataset.aaShiftMode = "margin";
-  node.dataset.aaOriginalMarginRight = node.style.marginRight || "";
+  function applyShiftToTarget(target) {
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.aaShifted !== "1") {
+      target.dataset.aaShifted = "1";
+      target.dataset.aaOriginalMarginRight = target.style.marginRight || "";
+      target.dataset.aaOriginalTransition = target.style.transition || "";
+    }
 
-  const computed = style.marginRight;
-  const computedVal = Number.parseFloat(computed);
-  const nextMargin = Number.isFinite(computedVal) ? computedVal + shift : shift;
-  node.style.marginRight = `${nextMargin}px`;
-}
+    const existing = window.getComputedStyle(target).marginRight;
+    const existingValue = Number.parseFloat(existing);
+    const base = Number.isFinite(existingValue) ? existingValue : 0;
+    target.style.marginRight = `${base + PANEL_WIDTH}px`;
 
-  function collectShiftTargets() {
-    const targets = new Set();
-
-    const root = document.getElementById("root");
-    const sidebar = document.querySelector(".MuiDrawer-paperAnchorRight");
-
-    if (root) targets.add(root);
-    if (sidebar) targets.add(sidebar);
-
-    document.querySelectorAll(".MuiAppBar-root, header, [role='banner']").forEach((el) => {
-  if (!(el instanceof HTMLElement)) return;
-  const rect = el.getBoundingClientRect();
-  if (rect.width < window.innerWidth * 0.45) return;
-  if (rect.bottom < 20) return;
-
-  // IMPORTANT: header should "shrink", not "push"
-  el.dataset.aaShiftMode = "shrink";
-
-  targets.add(el);
-});
-
-    return Array.from(targets);
+    const priorTransition = target.dataset.aaOriginalTransition || "";
+    const marginTransition = `margin-right var(--aa-panel-motion-ms) var(--aa-panel-ease)`;
+    target.style.transition = priorTransition
+      ? `${priorTransition}, ${marginTransition}`
+      : marginTransition;
   }
 
-  function ensurePageShell() {
-  let shell = document.getElementById(PAGE_SHELL_ID);
-  if (shell) return shell;
-
-  shell = document.createElement("div");
-  shell.id = PAGE_SHELL_ID;
-
-  // Move everything currently in <body> into the shell, except our panel if it exists
-  const children = Array.from(document.body.childNodes);
-  for (const node of children) {
-    if (node instanceof HTMLElement && node.id === PANEL_ID) continue;
-    shell.appendChild(node);
+  function restoreShiftTargets() {
+    document.querySelectorAll('[data-aa-shifted="1"]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) return;
+      node.style.marginRight = node.dataset.aaOriginalMarginRight || "";
+      node.style.transition = node.dataset.aaOriginalTransition || "";
+      delete node.dataset.aaOriginalMarginRight;
+      delete node.dataset.aaOriginalTransition;
+      delete node.dataset.aaShifted;
+    });
   }
 
-  document.body.insertBefore(shell, document.body.firstChild);
-  return shell;
-}
-
-function unwrapPageShell() {
-  const shell = document.getElementById(PAGE_SHELL_ID);
-  if (!shell) return;
-
-  while (shell.firstChild) {
-    document.body.insertBefore(shell.firstChild, shell);
+  function applyShift() {
+    document.documentElement.setAttribute("data-aa-panel-open", "1");
+    document.documentElement.style.setProperty("--aa-panel-width", `${PANEL_WIDTH}px`);
+    getShiftTargets().forEach(applyShiftToTarget);
   }
-  shell.remove();
-}
 
-function applyShift() {
-  ensurePageShell();
-  document.documentElement.setAttribute("data-aa-panel-open", "1");
-  document.documentElement.style.setProperty("--aa-panel-width", `${PANEL_WIDTH}px`);
-}
-
-function resetShift() {
-  document.documentElement.removeAttribute("data-aa-panel-open");
-  document.documentElement.style.removeProperty("--aa-panel-width");
-  unwrapPageShell();
-}
+  function resetShift() {
+    document.documentElement.removeAttribute("data-aa-panel-open");
+    document.documentElement.style.removeProperty("--aa-panel-width");
+    restoreShiftTargets();
+  }
 
   function getSidebarOpenerCandidates() {
     const nodes = document.querySelectorAll("button, [role=\"button\"], .MuiIconButton-root, .MuiButtonBase-root");
@@ -710,22 +863,6 @@ html[data-aa-panel-open="1"] {
   overflow-x: hidden;
 }
 
-/* Wrap the whole app */
-#${PAGE_SHELL_ID} {
-  width: 100vw;
-  max-width: 100vw;
-}
-
-/* When panel is open, shrink the entire app area */
-html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
-  width: calc(100vw - var(--aa-panel-width));
-  max-width: calc(100vw - var(--aa-panel-width));
-  overflow-x: hidden;
-  transition:
-    width var(--aa-panel-motion-ms) var(--aa-panel-ease),
-    max-width var(--aa-panel-motion-ms) var(--aa-panel-ease);
-  transform: translateZ(0);
-}
 
       #${PANEL_ID} {
         position: fixed;
@@ -754,14 +891,6 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
       #${PANEL_ID}.aa-visible { transform: translate3d(0, 0, 0) scale(1); opacity: 1; filter: blur(0); }
       #${PANEL_ID}.aa-launching { transform: translate3d(0, 0, 0) scale(0.998); }
 
-      [data-aa-shifted='1'] {
-  transition:
-    margin-right var(--aa-panel-motion-ms) var(--aa-panel-ease),
-    left var(--aa-panel-motion-ms) var(--aa-panel-ease),
-    right var(--aa-panel-motion-ms) var(--aa-panel-ease),
-    width var(--aa-panel-motion-ms) var(--aa-panel-ease);
-  will-change: margin-right, left, right, width;
-}
 
       [data-aa-nudged='1'] {
         transition: transform var(--aa-panel-motion-ms) var(--aa-panel-ease), z-index 0s linear;
@@ -865,9 +994,12 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
       .aa-toggle-btn:hover { border-color: #C0C0D0; }
       .aa-toggle-btn.active { background: #1A1A2E; border-color: #1A1A2E; color: #fff; font-weight: 600; }
       .aa-time-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
-      .aa-time-btn { padding: 8px 4px; border: 1px solid #E0E0E8; border-radius: 7px; background: #fff; cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 500; color: #5B5B76; text-align: center; transition: all 0.15s ease; }
+      .aa-time-btn { padding: 7px 4px 6px; border: 1px solid #E0E0E8; border-radius: 7px; background: #fff; cursor: pointer; font-family: inherit; color: #5B5B76; text-align: center; transition: all 0.15s ease; display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
+      .aa-time-label { font-size: 11.5px; font-weight: 500; }
+      .aa-time-booked { margin-top: 2px; font-size: 10px; font-weight: 500; color: #8A8AA3; }
       .aa-time-btn:hover { border-color: #C0C0D0; }
       .aa-time-btn.active { background: #1A1A2E; border-color: #1A1A2E; color: #fff; font-weight: 600; }
+      .aa-time-btn.active .aa-time-booked { color: rgba(255, 255, 255, 0.85); }
       .aa-check-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #E8E8EC; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 5px; transition: all 0.15s ease; }
       .aa-check-item:last-child { margin-bottom: 0; }
       .aa-check-item:hover { border-color: #D0D0DD; }
@@ -1207,6 +1339,36 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
     persistPanelState();
   }
 
+  function loadTimeSlotCountsForSelectedDate(panel) {
+    const selectedDate = panelState.appointment.date;
+    const shopId = panelState.roData?.shopId;
+    if (!selectedDate || !shopId) return;
+
+    const selectedDateKey = getDateKey(selectedDate);
+    if (panelState.timeSlotCountsDateKey === selectedDateKey || panelState.timeSlotCountsLoading) {
+      return;
+    }
+
+    panelState.timeSlotCountsLoading = true;
+
+    fetchTimeSlotCounts(shopId, selectedDate)
+      .then((counts) => {
+        panelState.timeSlotCounts = counts;
+        panelState.timeSlotCountsDateKey = selectedDateKey;
+      })
+      .catch(() => {
+        panelState.timeSlotCounts = { dropoff: {}, wait: {} };
+        panelState.timeSlotCountsDateKey = selectedDateKey;
+      })
+      .finally(() => {
+        panelState.timeSlotCountsLoading = false;
+        persistPanelState();
+        if (panelState.screen === 2 && panel && panel.isConnected) {
+          renderScreen2(panel);
+        }
+      });
+  }
+
   function renderScreen2(panel) {
     panelState.screen = 2;
     const roData = panelState.roData;
@@ -1233,6 +1395,7 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
           <div class="aa-section">
             <div class="aa-section-label">Time</div>
             <div class="aa-time-grid" id="aa-time-grid"></div>
+            <div class="aa-help" id="aa-time-counts-status"></div>
           </div>
 
           <div class="aa-section">
@@ -1306,11 +1469,19 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
       renderScreen2(panel);
     };
 
+    loadTimeSlotCountsForSelectedDate(panel);
+
     const timeGrid = document.getElementById("aa-time-grid");
+    const activeTypeCounts = panelState.timeSlotCounts?.[panelState.appointment.type] ?? {};
+
     getHourlyTimeOptions().forEach((hour) => {
       const btn = document.createElement("button");
+      const bookedCount = activeTypeCounts[hour] ?? 0;
       btn.className = `aa-time-btn ${hour === panelState.appointment.hour ? "active" : ""}`;
-      btn.textContent = formatHourLabel(hour);
+      btn.innerHTML = `
+        <span class="aa-time-label">${formatHourLabel(hour)}</span>
+        <span class="aa-time-booked">${bookedCount} booked</span>
+      `;
       btn.onclick = () => {
         panelState.appointment.hour = hour;
         persistPanelState();
@@ -1318,6 +1489,11 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
       };
       timeGrid.appendChild(btn);
     });
+
+    const timeCountStatus = document.getElementById("aa-time-counts-status");
+    if (timeCountStatus) {
+      timeCountStatus.textContent = panelState.timeSlotCountsLoading ? "Loading scheduler counts…" : "";
+    }
 
     function setupCheckList(containerId, stateKey) {
       const container = document.getElementById(containerId);
