@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Advance Appointment Sidebar",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Shows a 6-month advance appointment sidebar on Tekmetric payment screen.",
   "permissions": [],
   "host_permissions": [

@@ -1473,6 +1473,11 @@ html[data-aa-panel-open="1"] {
     const timeGrid = document.getElementById("aa-time-grid");
     if (!timeGrid) return;
 
+    // Defensive compatibility: keep this map defined in case a cached extension build
+    // still references activeTypeCounts during time-button rendering.
+    const activeTypeCounts = panelState.timeSlotCounts?.[panelState.appointment.type] ?? {};
+    void activeTypeCounts;
+
     getHourlyTimeOptions().forEach((hour) => {
       const btn = document.createElement("button");
       const bookedCount = activeTypeCounts[hour] ?? 0;
