@@ -998,6 +998,7 @@ html[data-aa-panel-open="1"] {
       .aa-time-label { font-size: 11.5px; font-weight: 500; }
       .aa-time-btn:hover { border-color: #C0C0D0; }
       .aa-time-btn.active { background: #1A1A2E; border-color: #1A1A2E; color: #fff; font-weight: 600; }
+      .aa-time-btn.active .aa-time-booked { color: rgba(255, 255, 255, 0.85); }
       .aa-check-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #E8E8EC; border-radius: 8px; background: #fff; cursor: pointer; margin-bottom: 5px; transition: all 0.15s ease; }
       .aa-check-item:last-child { margin-bottom: 0; }
       .aa-check-item:hover { border-color: #D0D0DD; }
@@ -1337,6 +1338,36 @@ html[data-aa-panel-open="1"] {
     persistPanelState();
   }
 
+  function loadTimeSlotCountsForSelectedDate(panel) {
+    const selectedDate = panelState.appointment.date;
+    const shopId = panelState.roData?.shopId;
+    if (!selectedDate || !shopId) return;
+
+    const selectedDateKey = getDateKey(selectedDate);
+    if (panelState.timeSlotCountsDateKey === selectedDateKey || panelState.timeSlotCountsLoading) {
+      return;
+    }
+
+    panelState.timeSlotCountsLoading = true;
+
+    fetchTimeSlotCounts(shopId, selectedDate)
+      .then((counts) => {
+        panelState.timeSlotCounts = counts;
+        panelState.timeSlotCountsDateKey = selectedDateKey;
+      })
+      .catch(() => {
+        panelState.timeSlotCounts = { dropoff: {}, wait: {} };
+        panelState.timeSlotCountsDateKey = selectedDateKey;
+      })
+      .finally(() => {
+        panelState.timeSlotCountsLoading = false;
+        persistPanelState();
+        if (panelState.screen === 2 && panel && panel.isConnected) {
+          renderScreen2(panel);
+        }
+      });
+  }
+
   function renderScreen2(panel) {
     panelState.screen = 2;
     const roData = panelState.roData;
@@ -1363,6 +1394,7 @@ html[data-aa-panel-open="1"] {
           <div class="aa-section">
             <div class="aa-section-label">Time</div>
             <div class="aa-time-grid" id="aa-time-grid"></div>
+            <div class="aa-help" id="aa-time-counts-status"></div>
           </div>
 
           <div class="aa-section">
@@ -1436,10 +1468,13 @@ html[data-aa-panel-open="1"] {
       renderScreen2(panel);
     };
 
+    loadTimeSlotCountsForSelectedDate(panel);
+
     const timeGrid = document.getElementById("aa-time-grid");
 
     getHourlyTimeOptions().forEach((hour) => {
       const btn = document.createElement("button");
+      const bookedCount = activeTypeCounts[hour] ?? 0;
       btn.className = `aa-time-btn ${hour === panelState.appointment.hour ? "active" : ""}`;
       btn.innerHTML = `<span class="aa-time-label">${formatHourLabel(hour)}</span>`;
       btn.onclick = () => {
@@ -1449,6 +1484,11 @@ html[data-aa-panel-open="1"] {
       };
       timeGrid.appendChild(btn);
     });
+
+    const timeCountStatus = document.getElementById("aa-time-counts-status");
+    if (timeCountStatus) {
+      timeCountStatus.textContent = panelState.timeSlotCountsLoading ? "Loading scheduler counts…" : "";
+    }
 
     function setupCheckList(containerId, stateKey) {
       const container = document.getElementById(containerId);
