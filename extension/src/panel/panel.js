@@ -996,7 +996,6 @@ html[data-aa-panel-open="1"] {
       .aa-time-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
       .aa-time-btn { padding: 7px 4px 6px; border: 1px solid #E0E0E8; border-radius: 7px; background: #fff; cursor: pointer; font-family: inherit; color: #5B5B76; text-align: center; transition: all 0.15s ease; display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
       .aa-time-label { font-size: 11.5px; font-weight: 500; }
-      .aa-time-booked { margin-top: 2px; font-size: 10px; font-weight: 500; color: #8A8AA3; }
       .aa-time-btn:hover { border-color: #C0C0D0; }
       .aa-time-btn.active { background: #1A1A2E; border-color: #1A1A2E; color: #fff; font-weight: 600; }
       .aa-time-btn.active .aa-time-booked { color: rgba(255, 255, 255, 0.85); }
@@ -1472,16 +1471,12 @@ html[data-aa-panel-open="1"] {
     loadTimeSlotCountsForSelectedDate(panel);
 
     const timeGrid = document.getElementById("aa-time-grid");
-    const activeTypeCounts = panelState.timeSlotCounts?.[panelState.appointment.type] ?? {};
 
     getHourlyTimeOptions().forEach((hour) => {
       const btn = document.createElement("button");
       const bookedCount = activeTypeCounts[hour] ?? 0;
       btn.className = `aa-time-btn ${hour === panelState.appointment.hour ? "active" : ""}`;
-      btn.innerHTML = `
-        <span class="aa-time-label">${formatHourLabel(hour)}</span>
-        <span class="aa-time-booked">${bookedCount} booked</span>
-      `;
+      btn.innerHTML = `<span class="aa-time-label">${formatHourLabel(hour)}</span>`;
       btn.onclick = () => {
         panelState.appointment.hour = hour;
         persistPanelState();
