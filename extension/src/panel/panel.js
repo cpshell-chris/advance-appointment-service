@@ -1471,6 +1471,7 @@ html[data-aa-panel-open="1"] {
     loadTimeSlotCountsForSelectedDate(panel);
 
     const timeGrid = document.getElementById("aa-time-grid");
+    if (!timeGrid) return;
 
     getHourlyTimeOptions().forEach((hour) => {
       const btn = document.createElement("button");
