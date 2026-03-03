@@ -1,14 +1,17 @@
 /*
  * panel.js
  *
- * Non-invasive enhancement for Tekmetric Schedule (Screen 2):
- * shows "X booked" beneath each time option.
+ * Screen 2 "Schedule" helper for Tekmetric side panel.
  *
- * Backend dependency:
- *   GET /appointments/slot-counts?shopId=<id>&date=YYYY-MM-DD
+ * What it does:
+ * - Finds all time buttons in the TIME grid.
+ * - Displays a small "X booked" label under each time.
+ * - Pulls existing appointment counts for the selected date from:
+ *   GET /appointments/slot-counts?shopId=...&date=YYYY-MM-DD
  *
- * Response shape:
- *   { success: true, date: "YYYY-MM-DD", slotCounts: { "8:00 AM": 1, ... } }
+ * Notes:
+ * - Set window.ADVANCE_APPOINTMENT_SERVICE_URL if your API is hosted elsewhere.
+ * - The script auto-refreshes when time buttons are re-rendered by Tekmetric.
  */
 
 (() => {
@@ -18,23 +21,20 @@
     window.ADVANCE_APPOINTMENT_SERVICE_URL ||
     "https://advance-appointment-service.onrender.com";
 
-  const CLS_BOOKED = "aa-booked-count";
-  const ATTR_ENHANCED = "data-aa-booked-enhanced";
-  const ATTR_TIME_LABEL = "data-aa-time-label";
-  const REFRESH_DELAY_MS = 200;
+  const REFRESH_DEBOUNCE_MS = 250;
+  const BOOKED_CLASS = "aa-booked-count";
+  const WRAP_CLASS = "aa-time-content";
 
-  let observer;
-  let refreshTimer;
-  let lastFetchKey = "";
-  let cachedCounts = {};
+  let refreshTimer = null;
+  let lastSignature = "";
 
-  function ensureStyles() {
-    if (document.getElementById("aa-booked-count-style")) return;
+  function injectStyles() {
+    if (document.getElementById("aa-booked-count-styles")) return;
 
     const style = document.createElement("style");
-    style.id = "aa-booked-count-style";
+    style.id = "aa-booked-count-styles";
     style.textContent = `
-      button[${ATTR_ENHANCED}="1"] {
+      .${WRAP_CLASS} {
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -42,126 +42,128 @@
         line-height: 1.1;
       }
 
-      .${CLS_BOOKED} {
-        margin-top: 2px;
+      .${BOOKED_CLASS} {
+        margin-top: 3px;
         font-size: 10px;
         font-weight: 500;
-        opacity: 0.78;
+        opacity: 0.75;
         white-space: nowrap;
-        pointer-events: none;
       }
 
-      button[aria-pressed="true"] .${CLS_BOOKED},
-      button[class*="selected"] .${CLS_BOOKED} {
-        opacity: 0.96;
+      button[aria-pressed="true"] .${BOOKED_CLASS},
+      button[class*="selected"] .${BOOKED_CLASS} {
+        opacity: 0.95;
       }
     `;
 
     document.head.appendChild(style);
   }
 
-  function toDateKey(value) {
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return null;
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  }
+  function parseDateFromPanelText() {
+    const container = document.querySelector("[data-testid='appointment-details'], .appointment-details, aside, [role='complementary']");
+    if (!container) return null;
 
-  function getShopId() {
-    const pathMatch = window.location.pathname.match(/\/admin\/shop\/(\d+)\//);
-    if (pathMatch) return pathMatch[1];
-
-    const qs = new URLSearchParams(window.location.search);
-    return qs.get("shopId") || qs.get("shop") || null;
-  }
-
-  function getDisplayedDate() {
-    // Looks for "Jun 30, 2026" in the appointment panel text.
-    const panel =
-      document.querySelector("[data-testid='appointment-details']") ||
-      document.querySelector("aside") ||
-      document.querySelector("[role='complementary']");
-
-    if (!panel) return null;
-
-    const text = panel.textContent || "";
+    const text = container.textContent || "";
     const match = text.match(/([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/);
     if (!match) return null;
 
-    return toDateKey(match[1]);
+    const date = new Date(match[1]);
+    if (Number.isNaN(date.getTime())) return null;
+
+    return toDateKey(date);
   }
 
-  function normalizeTimeLabel(raw) {
-    if (!raw) return null;
+  function toDateKey(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
 
-    const text = raw.replace(/\s+/g, " ").trim().toUpperCase();
-    const m = text.match(/^(\d{1,2}):(\d{2})\s*([AP]M)$/);
-    if (!m) return null;
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
 
-    let hour = Number(m[1]);
-    const min = Number(m[2]);
-    const ampm = m[3];
+    return `${year}-${month}-${day}`;
+  }
 
-    if (!Number.isFinite(hour) || !Number.isFinite(min)) return null;
+  function getShopIdFromUrl() {
+    const byPath = window.location.pathname.match(/\/admin\/shop\/(\d+)\//);
+    if (byPath) return byPath[1];
 
-    if (hour === 12 && ampm === "AM") hour = 0;
-    if (hour !== 12 && ampm === "PM") hour += 12;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("shop") || params.get("shopId") || null;
+  }
+
+  function normalizeTimeLabel(label) {
+    if (!label) return null;
+
+    const trimmed = label.replace(/\s+/g, " ").trim().toUpperCase();
+    const match = trimmed.match(/^(\d{1,2})(?::(\d{2}))?\s*([AP]M)$/);
+    if (!match) return null;
+
+    let hour = Number(match[1]);
+    const minute = Number(match[2] || "0");
+    const period = match[3];
+
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+
+    if (hour === 12 && period === "AM") hour = 0;
+    else if (hour !== 12 && period === "PM") hour += 12;
 
     const d = new Date();
-    d.setHours(hour, min, 0, 0);
+    d.setHours(hour, minute, 0, 0);
 
-    let outH = d.getHours();
-    const outM = d.getMinutes();
-    const outA = outH >= 12 ? "PM" : "AM";
+    let outHour = d.getHours();
+    const outMinute = d.getMinutes();
+    const outPeriod = outHour >= 12 ? "PM" : "AM";
 
-    outH %= 12;
-    if (outH === 0) outH = 12;
+    outHour %= 12;
+    if (outHour === 0) outHour = 12;
 
-    return `${outH}:${String(outM).padStart(2, "0")} ${outA}`;
-  }
-
-  function findTimeLabelInText(text) {
-    if (!text) return null;
-    const m = text.match(/\b\d{1,2}:\d{2}\s*[AP]M\b/i);
-    return m ? normalizeTimeLabel(m[0]) : null;
+    return `${outHour}:${String(outMinute).padStart(2, "0")} ${outPeriod}`;
   }
 
   function getTimeButtons() {
-    const buttons = Array.from(document.querySelectorAll("button"));
-    return buttons
-      .map((button) => {
-        const timeLabel = findTimeLabelInText(button.textContent || "");
-        if (!timeLabel) return null;
-        return { button, timeLabel };
-      })
-      .filter(Boolean);
+    const candidates = Array.from(document.querySelectorAll("button"));
+
+    return candidates.filter((btn) => {
+      const text = (btn.textContent || "").trim();
+      return /\d{1,2}:\d{2}\s*[AP]M/i.test(text);
+    });
   }
 
-  function ensureBookedNode(button, timeLabel) {
-    button.setAttribute(ATTR_ENHANCED, "1");
-    button.setAttribute(ATTR_TIME_LABEL, timeLabel);
-
-    let node = button.querySelector(`.${CLS_BOOKED}`);
-    if (!node) {
-      node = document.createElement("span");
-      node.className = CLS_BOOKED;
-      node.textContent = "0 booked";
-      button.appendChild(node);
-    }
-
-    return node;
+  function getPrimaryTimeText(button) {
+    const text = (button.textContent || "").split("booked")[0].trim();
+    const match = text.match(/\d{1,2}:\d{2}\s*[AP]M/i);
+    return match ? normalizeTimeLabel(match[0]) : null;
   }
 
-  function renderCounts(slotCounts) {
-    const entries = getTimeButtons();
+  function setButtonBookedCount(button, count) {
+    const timeLabel = getPrimaryTimeText(button);
+    if (!timeLabel) return;
 
-    for (const { button, timeLabel } of entries) {
-      const countNode = ensureBookedNode(button, timeLabel);
-      const count = Number(slotCounts?.[timeLabel] ?? 0);
-      countNode.textContent = `${Number.isFinite(count) ? count : 0} booked`;
+    let wrap = button.querySelector(`.${WRAP_CLASS}`);
+    if (!wrap) {
+      wrap = document.createElement("span");
+      wrap.className = WRAP_CLASS;
+
+      const timeEl = document.createElement("span");
+      timeEl.className = "aa-time-label";
+      timeEl.textContent = timeLabel;
+
+      const bookedEl = document.createElement("span");
+      bookedEl.className = BOOKED_CLASS;
+
+      wrap.appendChild(timeEl);
+      wrap.appendChild(bookedEl);
+
+      button.textContent = "";
+      button.appendChild(wrap);
     }
+
+    const bookedEl = wrap.querySelector(`.${BOOKED_CLASS}`);
+    if (!bookedEl) return;
+
+    const safeCount = Number.isFinite(Number(count)) ? Number(count) : 0;
+    bookedEl.textContent = `${safeCount} booked`;
   }
 
   async function fetchSlotCounts(shopId, date) {
@@ -169,65 +171,74 @@
     url.searchParams.set("shopId", shopId);
     url.searchParams.set("date", date);
 
-    const res = await fetch(url.toString(), { method: "GET" });
-    if (!res.ok) {
-      throw new Error(`slot-counts request failed (${res.status})`);
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch slot counts (${response.status})`);
     }
 
-    const body = await res.json();
-    if (!body || typeof body !== "object") return {};
-    return body.slotCounts && typeof body.slotCounts === "object"
-      ? body.slotCounts
+    const payload = await response.json();
+    return payload?.slotCounts && typeof payload.slotCounts === "object"
+      ? payload.slotCounts
       : {};
   }
 
-  async function refresh() {
-    const shopId = getShopId();
-    const date = getDisplayedDate();
-    const hasTimeButtons = getTimeButtons().length > 0;
+  async function refreshBookedCounts() {
+    const shopId = getShopIdFromUrl();
+    const date = parseDateFromPanelText();
+    const buttons = getTimeButtons();
 
-    if (!hasTimeButtons) return;
+    if (!shopId || !date || buttons.length === 0) return;
 
-    if (!shopId || !date) {
-      // We still render with fallback 0 booked so UI stays consistent.
-      renderCounts({});
+    const signature = `${shopId}|${date}|${buttons.length}`;
+    if (signature === lastSignature) {
       return;
     }
 
-    const fetchKey = `${shopId}|${date}`;
+    lastSignature = signature;
 
-    if (fetchKey !== lastFetchKey) {
-      lastFetchKey = fetchKey;
-      try {
-        cachedCounts = await fetchSlotCounts(shopId, date);
-      } catch (err) {
-        console.error("[AA] Could not fetch slot counts", err);
-        cachedCounts = {};
+    try {
+      const slotCounts = await fetchSlotCounts(shopId, date);
+
+      for (const button of buttons) {
+        const time = getPrimaryTimeText(button);
+        if (!time) continue;
+
+        const count = slotCounts[time] || 0;
+        setButtonBookedCount(button, count);
+      }
+    } catch (err) {
+      console.error("[Advance Appointment] Could not load slot counts", err);
+
+      for (const button of buttons) {
+        setButtonBookedCount(button, 0);
       }
     }
-
-    renderCounts(cachedCounts);
   }
 
   function scheduleRefresh() {
-    window.clearTimeout(refreshTimer);
+    if (refreshTimer) window.clearTimeout(refreshTimer);
     refreshTimer = window.setTimeout(() => {
-      refresh().catch((err) => console.error("[AA] refresh failed", err));
-    }, REFRESH_DELAY_MS);
+      refreshBookedCounts().catch((err) => {
+        console.error("[Advance Appointment] refresh error", err);
+      });
+    }, REFRESH_DEBOUNCE_MS);
   }
 
-  function startObserver() {
-    if (observer) observer.disconnect();
-
-    observer = new MutationObserver(() => {
-      // If date/time selection changes we should allow refetch.
-      lastFetchKey = "";
+  function observePanelChanges() {
+    const observer = new MutationObserver(() => {
+      lastSignature = "";
       scheduleRefresh();
     });
 
     observer.observe(document.body, {
-      subtree: true,
       childList: true,
+      subtree: true,
       characterData: true
     });
   }
@@ -235,11 +246,13 @@
   function init() {
     ensureStyles();
     startObserver();
+    injectStyles();
+    observePanelChanges();
     scheduleRefresh();
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init, { once: true });
+    document.addEventListener("DOMContentLoaded", init);
   } else {
     init();
   }
