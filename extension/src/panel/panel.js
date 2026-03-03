@@ -7,7 +7,6 @@
 
   const PANEL_ID = "aa-fixed-panel";
   const STYLE_ID = "aa-fixed-style";
-  const PAGE_SHELL_ID = "aa-page-shell";
   const PANEL_WIDTH = 380;
   const PANEL_MOTION_MS = 520;
   const PANEL_FADE_MS = 420;
@@ -735,112 +734,56 @@
     return job?.name ?? job?.title ?? job?.description ?? "Unnamed Service";
   }
 
-  function applyShiftToNode(node, shift) {
-  if (!(node instanceof HTMLElement)) return;
-  if (node.dataset.aaShifted === "1") return;
-
-  const style = window.getComputedStyle(node);
-  const rect = node.getBoundingClientRect();
-
-  const isTopFixedHeader =
-    (style.position === "fixed" || style.position === "sticky") &&
-    rect.top <= 2 &&
-    rect.height >= 36 &&
-    rect.height <= 200 &&
-    rect.width >= window.innerWidth * 0.45;
-
-  node.dataset.aaShifted = "1";
-
-  // ✅ Shrink top header bars instead of pushing them
-  if (isTopFixedHeader) {
-    node.dataset.aaShiftMode = "shrink";
-
-    node.dataset.aaOriginalLeft = node.style.left || "";
-    node.dataset.aaOriginalRight = node.style.right || "";
-    node.dataset.aaOriginalWidth = node.style.width || "";
-    node.dataset.aaOriginalMaxWidth = node.style.maxWidth || "";
-
-    // Key fix for Tekmetric header: override left-auto/right-0/w-full behavior
-    node.style.left = "0px";
-    node.style.right = `${shift}px`;
-    node.style.width = "auto";
-    node.style.maxWidth = "none";
-    return;
+  function getShiftTargets() {
+    return [
+      document.getElementById("root"),
+      document.querySelector(".MuiDrawer-paperAnchorRight"),
+      document.querySelector("#kt_app_sidebar")
+    ].filter((el) => el instanceof HTMLElement);
   }
 
-  // ✅ Normal elements: push left by increasing margin-right
-  node.dataset.aaShiftMode = "margin";
-  node.dataset.aaOriginalMarginRight = node.style.marginRight || "";
+  function applyShiftToTarget(target) {
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.aaShifted !== "1") {
+      target.dataset.aaShifted = "1";
+      target.dataset.aaOriginalMarginRight = target.style.marginRight || "";
+      target.dataset.aaOriginalTransition = target.style.transition || "";
+    }
 
-  const computed = style.marginRight;
-  const computedVal = Number.parseFloat(computed);
-  const nextMargin = Number.isFinite(computedVal) ? computedVal + shift : shift;
-  node.style.marginRight = `${nextMargin}px`;
-}
+    const existing = window.getComputedStyle(target).marginRight;
+    const existingValue = Number.parseFloat(existing);
+    const base = Number.isFinite(existingValue) ? existingValue : 0;
+    target.style.marginRight = `${base + PANEL_WIDTH}px`;
 
-  function collectShiftTargets() {
-    const targets = new Set();
-
-    const root = document.getElementById("root");
-    const sidebar = document.querySelector(".MuiDrawer-paperAnchorRight");
-
-    if (root) targets.add(root);
-    if (sidebar) targets.add(sidebar);
-
-    document.querySelectorAll(".MuiAppBar-root, header, [role='banner']").forEach((el) => {
-  if (!(el instanceof HTMLElement)) return;
-  const rect = el.getBoundingClientRect();
-  if (rect.width < window.innerWidth * 0.45) return;
-  if (rect.bottom < 20) return;
-
-  // IMPORTANT: header should "shrink", not "push"
-  el.dataset.aaShiftMode = "shrink";
-
-  targets.add(el);
-});
-
-    return Array.from(targets);
+    const priorTransition = target.dataset.aaOriginalTransition || "";
+    const marginTransition = `margin-right var(--aa-panel-motion-ms) var(--aa-panel-ease)`;
+    target.style.transition = priorTransition
+      ? `${priorTransition}, ${marginTransition}`
+      : marginTransition;
   }
 
-  function ensurePageShell() {
-  let shell = document.getElementById(PAGE_SHELL_ID);
-  if (shell) return shell;
-
-  shell = document.createElement("div");
-  shell.id = PAGE_SHELL_ID;
-
-  // Move everything currently in <body> into the shell, except our panel if it exists
-  const children = Array.from(document.body.childNodes);
-  for (const node of children) {
-    if (node instanceof HTMLElement && node.id === PANEL_ID) continue;
-    shell.appendChild(node);
+  function restoreShiftTargets() {
+    document.querySelectorAll('[data-aa-shifted="1"]').forEach((node) => {
+      if (!(node instanceof HTMLElement)) return;
+      node.style.marginRight = node.dataset.aaOriginalMarginRight || "";
+      node.style.transition = node.dataset.aaOriginalTransition || "";
+      delete node.dataset.aaOriginalMarginRight;
+      delete node.dataset.aaOriginalTransition;
+      delete node.dataset.aaShifted;
+    });
   }
 
-  document.body.insertBefore(shell, document.body.firstChild);
-  return shell;
-}
-
-function unwrapPageShell() {
-  const shell = document.getElementById(PAGE_SHELL_ID);
-  if (!shell) return;
-
-  while (shell.firstChild) {
-    document.body.insertBefore(shell.firstChild, shell);
+  function applyShift() {
+    document.documentElement.setAttribute("data-aa-panel-open", "1");
+    document.documentElement.style.setProperty("--aa-panel-width", `${PANEL_WIDTH}px`);
+    getShiftTargets().forEach(applyShiftToTarget);
   }
-  shell.remove();
-}
 
-function applyShift() {
-  ensurePageShell();
-  document.documentElement.setAttribute("data-aa-panel-open", "1");
-  document.documentElement.style.setProperty("--aa-panel-width", `${PANEL_WIDTH}px`);
-}
-
-function resetShift() {
-  document.documentElement.removeAttribute("data-aa-panel-open");
-  document.documentElement.style.removeProperty("--aa-panel-width");
-  unwrapPageShell();
-}
+  function resetShift() {
+    document.documentElement.removeAttribute("data-aa-panel-open");
+    document.documentElement.style.removeProperty("--aa-panel-width");
+    restoreShiftTargets();
+  }
 
   function getSidebarOpenerCandidates() {
     const nodes = document.querySelectorAll("button, [role=\"button\"], .MuiIconButton-root, .MuiButtonBase-root");
@@ -920,22 +863,6 @@ html[data-aa-panel-open="1"] {
   overflow-x: hidden;
 }
 
-/* Wrap the whole app */
-#${PAGE_SHELL_ID} {
-  width: 100vw;
-  max-width: 100vw;
-}
-
-/* When panel is open, shrink the entire app area */
-html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
-  width: calc(100vw - var(--aa-panel-width));
-  max-width: calc(100vw - var(--aa-panel-width));
-  overflow-x: hidden;
-  transition:
-    width var(--aa-panel-motion-ms) var(--aa-panel-ease),
-    max-width var(--aa-panel-motion-ms) var(--aa-panel-ease);
-  transform: translateZ(0);
-}
 
       #${PANEL_ID} {
         position: fixed;
@@ -964,14 +891,6 @@ html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
       #${PANEL_ID}.aa-visible { transform: translate3d(0, 0, 0) scale(1); opacity: 1; filter: blur(0); }
       #${PANEL_ID}.aa-launching { transform: translate3d(0, 0, 0) scale(0.998); }
 
-      [data-aa-shifted='1'] {
-  transition:
-    margin-right var(--aa-panel-motion-ms) var(--aa-panel-ease),
-    left var(--aa-panel-motion-ms) var(--aa-panel-ease),
-    right var(--aa-panel-motion-ms) var(--aa-panel-ease),
-    width var(--aa-panel-motion-ms) var(--aa-panel-ease);
-  will-change: margin-right, left, right, width;
-}
 
       [data-aa-nudged='1'] {
         transition: transform var(--aa-panel-motion-ms) var(--aa-panel-ease), z-index 0s linear;
