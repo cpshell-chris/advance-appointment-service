@@ -399,41 +399,12 @@
     const source = result.timeCounts ?? result.counts ?? result;
     const scoped = source?.[dateKey] ?? source;
 
-    const readHourFromKey = (rawKey) => {
-      const text = String(rawKey ?? "").trim();
-      if (!text) return null;
-
-      if (text.includes("T")) {
-        const parsedDate = new Date(text);
-        if (!Number.isNaN(parsedDate.getTime())) return parsedDate.getHours();
-      }
-
-      const ampmMatch = text.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
-      if (ampmMatch) {
-        const hour12 = Number(ampmMatch[1]);
-        const suffix = ampmMatch[3].toUpperCase();
-        const normalizedHour = hour12 % 12;
-        return suffix === "PM" ? normalizedHour + 12 : normalizedHour;
-      }
-
-      const hourFirstMatch = text.match(/^(\d{1,2})(?::\d{2})?$/);
-      if (hourFirstMatch) {
-        const hour = Number(hourFirstMatch[1]);
-        return Number.isFinite(hour) ? hour : null;
-      }
-
-      const isoHourMatch = text.match(/T(\d{2}):\d{2}/);
-      if (isoHourMatch) return Number(isoHourMatch[1]);
-
-      return null;
-    };
-
     const applyCountMap = (type, map) => {
       if (!map || typeof map !== "object") return;
       Object.entries(map).forEach(([hourKey, count]) => {
-        const hour = readHourFromKey(hourKey);
-        if (!Number.isInteger(hour) || hour < 0 || hour > 23) return;
-        normalized[type][hour] = (normalized[type][hour] || 0) + (Number(count) || 0);
+        const hour = Number.parseInt(String(hourKey).slice(0, 2), 10);
+        if (!Number.isFinite(hour)) return;
+        normalized[type][hour] = Number(count) || 0;
       });
     };
 
