@@ -265,6 +265,20 @@ function toDateKey(value) {
   return `${year}-${month}-${day}`;
 }
 
+function toTimeSlotLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  let hours = date.getHours();
+  const minutes = date.getMinutes();
+  const period = hours >= 12 ? "PM" : "AM";
+
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+
+  return `${hours}:${String(minutes).padStart(2, "0")} ${period}`;
+}
+
 function getAppointmentsFromResponse(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.data)) return payload.data;
@@ -583,6 +597,55 @@ app.get("/appointments/counts", async (req, res) => {
     });
   } catch (err) {
     console.error("/appointments/counts error", err);
+    return res.status(500).json({
+      success: false,
+      message: err instanceof Error ? err.message : "Internal server error"
+    });
+  }
+});
+
+app.get("/appointments/slot-counts", async (req, res) => {
+  try {
+    const config = validateTekmetricConfig();
+    if (!config.ok) {
+      return res.status(503).json({
+        success: false,
+        message: "Service not fully configured",
+        missingEnvVars: config.missing
+      });
+    }
+
+    const { shopId, date } = req.query;
+
+    if (!shopId || !date) {
+      return res.status(400).json({
+        success: false,
+        message: "shopId and date are required"
+      });
+    }
+
+    const token = await getAccessToken();
+    const appointments = await fetchAppointmentsForRange(token, shopId, date, date);
+
+    const slotCounts = {};
+
+    for (const appt of appointments) {
+      if (appt.deletedDate) continue;
+      if (appt.appointmentStatus === "CANCELLED" || appt.appointmentStatus === "NO_SHOW") continue;
+
+      const label = toTimeSlotLabel(appt?.startTime || appt?.startDate);
+      if (!label) continue;
+
+      slotCounts[label] = (slotCounts[label] || 0) + 1;
+    }
+
+    return res.json({
+      success: true,
+      date,
+      slotCounts
+    });
+  } catch (err) {
+    console.error("/appointments/slot-counts error", err);
     return res.status(500).json({
       success: false,
       message: err instanceof Error ? err.message : "Internal server error"
