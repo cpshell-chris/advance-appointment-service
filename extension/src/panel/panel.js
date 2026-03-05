@@ -36,6 +36,10 @@ const SHADOW_STYLE_ID = "aa-shadow-style";
 const PAGE_GLOW_CLASS = "aa-page-glow";
 
 let layoutWatchersAttached = false;
+let panelIsOpen = false;
+let panelIsClosing = false;
+
+const PAGE_SHELL_ID = "aa-page-shell";
 
 
   // ----------------------------
@@ -800,56 +804,63 @@ function bindHeaderControls() {
   }
 
   // ----------------------------
-  // Dock shift mechanics
+  // Dock layout mechanics
   // ----------------------------
-  function getShiftTargets() {
-    return [
-      docId("root"),
-      document.querySelector(".MuiDrawer-paperAnchorRight"),
-      document.querySelector("#kt_app_sidebar")
-    ].filter((el) => el instanceof HTMLElement);
-  }
+  function ensurePageShell() {
+    if (!document.body) return null;
 
-  function applyShiftToTarget(target) {
-    if (!(target instanceof HTMLElement)) return;
+    let shell = docId(PAGE_SHELL_ID);
+    if (!(shell instanceof HTMLElement)) {
+      shell = document.createElement("div");
+      shell.id = PAGE_SHELL_ID;
 
-    if (target.dataset.aaShifted !== "1") {
-      target.dataset.aaShifted = "1";
-      target.dataset.aaOriginalMarginRight = target.style.marginRight || "";
-      target.dataset.aaOriginalTransition = target.style.transition || "";
+      const firstChild = Array.from(document.body.children).find((el) => el.id !== PANEL_ID) || null;
+      if (firstChild) {
+        document.body.insertBefore(shell, firstChild);
+      } else {
+        document.body.appendChild(shell);
+      }
     }
 
-    const existing = window.getComputedStyle(target).marginRight;
-    const existingValue = Number.parseFloat(existing);
-    const base = Number.isFinite(existingValue) ? existingValue : 0;
-    target.style.marginRight = `${base + PANEL_WIDTH}px`;
+    Array.from(document.body.children).forEach((child) => {
+      if (!(child instanceof HTMLElement)) return;
+      if (child === shell) return;
+      if (child.id === PANEL_ID) return;
+      shell.appendChild(child);
+    });
 
-    const priorTransition = target.dataset.aaOriginalTransition || "";
-    const marginTransition = `margin-right var(--aa-panel-motion-ms) var(--aa-panel-ease)`;
-    target.style.transition = priorTransition ? `${priorTransition}, ${marginTransition}` : marginTransition;
+    return shell;
   }
 
-  function restoreShiftTargets() {
-    docAll('[data-aa-shifted="1"]').forEach((node) => {
-      if (!(node instanceof HTMLElement)) return;
-      node.style.marginRight = node.dataset.aaOriginalMarginRight || "";
-      node.style.transition = node.dataset.aaOriginalTransition || "";
-      delete node.dataset.aaOriginalMarginRight;
-      delete node.dataset.aaOriginalTransition;
-      delete node.dataset.aaShifted;
-    });
+  function hardClearDockCss() {
+    document.documentElement.removeAttribute("data-aa-panel-open");
+    document.documentElement.style.setProperty("--aa-panel-width", "");
+    document.documentElement.style.removeProperty("--aa-panel-width");
+
+    const shell = docId(PAGE_SHELL_ID);
+    if (shell) {
+      shell.style.width = "";
+      shell.style.maxWidth = "";
+      shell.style.overflowX = "";
+    }
   }
 
   function applyShift() {
+    if (!panelMounted || !panelIsOpen || panelIsClosing) return;
+
+    const shell = ensurePageShell();
+    if (!shell) return;
+
     document.documentElement.setAttribute("data-aa-panel-open", "1");
     document.documentElement.style.setProperty("--aa-panel-width", `${PANEL_WIDTH}px`);
-    getShiftTargets().forEach(applyShiftToTarget);
+
+    shell.style.width = `calc(100vw - ${PANEL_WIDTH}px)`;
+    shell.style.maxWidth = `calc(100vw - ${PANEL_WIDTH}px)`;
+    shell.style.overflowX = "hidden";
   }
 
   function resetShift() {
-    document.documentElement.removeAttribute("data-aa-panel-open");
-    document.documentElement.style.removeProperty("--aa-panel-width");
-    restoreShiftTargets();
+    hardClearDockCss();
   }
 
   function getSidebarOpenerCandidates() {
@@ -924,6 +935,34 @@ function bindHeaderControls() {
   }
 
   html[data-aa-panel-open="1"] { overflow-x: hidden; }
+
+  #${PAGE_SHELL_ID} {
+    width: 100%;
+    max-width: 100%;
+    min-height: 100vh;
+    box-sizing: border-box;
+  }
+
+  html[data-aa-panel-open="1"] #${PAGE_SHELL_ID} {
+    width: calc(100vw - var(--aa-panel-width));
+    max-width: calc(100vw - var(--aa-panel-width));
+    overflow-x: hidden;
+  }
+
+  html[data-aa-panel-open="1"] header.mui-fixed,
+  html[data-aa-panel-open="1"] header.fixed.mui-fixed,
+  html[data-aa-panel-open="1"] header.MuiAppBar-root,
+  html[data-aa-panel-open="1"] header.fixed.MuiAppBar-root {
+    right: var(--aa-panel-width) !important;
+    width: calc(100vw - var(--aa-panel-width)) !important;
+    max-width: calc(100vw - var(--aa-panel-width)) !important;
+  }
+
+  html[data-aa-panel-open="1"] .bg-v2-blue-grey-900 {
+    right: var(--aa-panel-width) !important;
+    width: calc(100vw - var(--aa-panel-width)) !important;
+    max-width: calc(100vw - var(--aa-panel-width)) !important;
+  }
 
   /* Host panel element (outside shadow) */
   #${PANEL_ID}{
@@ -1936,7 +1975,7 @@ function bindHeaderControls() {
 // Dock layout application (DOCK ONLY)
 // ----------------------------
 function updateLayoutForPanel() {
-  if (!panelMounted) return;
+  if (!panelMounted || !panelIsOpen || panelIsClosing) return;
 
   setPanelTopOffset();
   applyShift();
@@ -2057,21 +2096,41 @@ function updateLayoutForPanel() {
   }
 
   function showPanel() {
+  panelIsClosing = false;
+  panelIsOpen = true;
   setPanelOpenPersisted(true);
   restorePanelState();
   injectGlobalStyles();
+  ensurePageShell();
   attachLayoutWatchers();
   createPanel();
   setPageGlow(true);
 }
 
   function hidePanel() {
+    if (panelIsClosing) return;
+
+    panelIsClosing = true;
+    panelIsOpen = false;
+
+    detachLayoutWatchers();
+    hardClearDockCss();
+    restoreSidebarOpeners();
+
     setPanelOpenPersisted(false);
     setPageGlow(false);
     clearPersistedPanelState();
 
     const panel = panelHostEl || docId(PANEL_ID);
-    if (!panel) return;
+    if (!panel) {
+      panelMounted = false;
+      panelState = getDefaultPanelState();
+      panelHostEl = null;
+      panelShadow = null;
+      panelRootEl = null;
+      panelIsClosing = false;
+      return;
+    }
 
     panel.classList.remove("aa-visible");
     setTimeout(() => {
@@ -2080,15 +2139,10 @@ function updateLayoutForPanel() {
       panelMounted = false;
       panelState = getDefaultPanelState();
 
-      restoreSidebarOpeners();
-      resetShift();
-      detachLayoutWatchers();
-
-      
-
       panelHostEl = null;
       panelShadow = null;
       panelRootEl = null;
+      panelIsClosing = false;
     }, PANEL_MOTION_MS);
   }
 
