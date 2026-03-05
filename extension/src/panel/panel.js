@@ -67,9 +67,6 @@ let layoutWatchersAttached = false;
 function bindHeaderControls() {
   const closeBtn = uiId("aa-close-btn");
   if (closeBtn) closeBtn.onclick = hidePanel;
-
-  const grip = uiId(OVERLAY_GRIP_ID);
-  if (grip) grip.onclick = hidePanel;
 }
 
   // ----------------------------
@@ -1206,8 +1203,6 @@ function bindHeaderControls() {
     ${showClose !== false ? `<button class="aa-header-close" id="aa-close-btn" title="Close">✕</button>` : ""}
   </div>`;
 }
-    </div>`;
-  }
 
   function schedulerFooterButtonHTML(extraClass = "") {
     const classes = ["aa-btn-secondary", extraClass].filter(Boolean).join(" ");
@@ -1944,7 +1939,8 @@ function updateLayoutForPanel() {
   if (!panelMounted) return;
 
   setPanelTopOffset();
-  applyModeLayout();
+  applyShift();
+  nudgeSidebarOpenersForPanel();
 }
 
   function attachLayoutWatchers() {
@@ -2051,12 +2047,10 @@ function updateLayoutForPanel() {
       bindHeaderControls();
     } catch {
       panelRootEl.innerHTML = `
-        <div class="aa-grip" id="${OVERLAY_GRIP_ID}" title="Close">⋮</div>
         ${headerHTML({ title: "Advance Appointment Scheduler", subtitle: null, showBack: false })}
         <div class="aa-scroll"><div class="aa-content">
           <div class="aa-error-banner" style="margin-top:8px;">Failed to load repair order data. Open a repair order and try again.</div>
         </div></div>
-        <div id="${OVERLAY_RESIZE_ID}" title="Resize"></div>
       `;
       bindHeaderControls();
     }
