@@ -1,8 +1,4 @@
 (function () {
   "use strict";
-
-  function init() {
-window.AA.initRouteWatcher();  }
-
-  init();
+  // Reserved for future: inspection acquisition / DOM/XHR interception.
 })();

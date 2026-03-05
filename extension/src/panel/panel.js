@@ -1,12 +1,20 @@
+// src/panel/panel.js
 (function () {
   "use strict";
 
   if (!window.AA) window.AA = {};
 
+  // ----------------------------
+  // Core refs/state
+  // ----------------------------
   let panelMounted = false;
 
+  // Host is in document DOM; UI lives in its shadow root
+  let panelHostEl = null; // <div id="aa-fixed-panel">
+  let panelShadow = null; // shadowRoot
+  let panelRootEl = null; // <div id="aa-shadow-root"> inside shadowRoot
+
   const PANEL_ID = "aa-fixed-panel";
-  const STYLE_ID = "aa-fixed-style";
   const PANEL_WIDTH = 380;
   const PANEL_MOTION_MS = 520;
   const PANEL_FADE_MS = 420;
@@ -14,13 +22,59 @@
 
   const CLOUD_RUN_URL =
     "https://advance-appointment-service-361478515851.us-east4.run.app";
+
   const PANEL_OPEN_STORAGE_KEY = "aaPanelOpen";
   const PANEL_STATE_STORAGE_KEY = "aaPanelState";
   const RO_ID_QUERY_PARAM = "aaRoId";
   const PANEL_TOP_OFFSET_VAR = "--aa-panel-top-offset";
 
-  let layoutWatchersAttached = false;
+// ----------------------------
+// Shadow DOM + glow (DOCK ONLY)
+// ----------------------------
+const GLOBAL_STYLE_ID = "aa-global-style";
+const SHADOW_STYLE_ID = "aa-shadow-style";
+const PAGE_GLOW_CLASS = "aa-page-glow";
 
+let layoutWatchersAttached = false;
+
+
+  // ----------------------------
+  // Helpers: querying elements
+  // ----------------------------
+  function docId(id) {
+    return document.getElementById(id);
+  }
+
+  // UI elements live in shadow; use this everywhere for your controls
+  function uiId(id) {
+    if (panelShadow && typeof panelShadow.getElementById === "function") {
+      return panelShadow.getElementById(id);
+    }
+    return null;
+  }
+
+  function docAll(sel) {
+    return Array.from(document.querySelectorAll(sel));
+  }
+
+  function setPageGlow(on) {
+  document.documentElement.classList.toggle(PAGE_GLOW_CLASS, !!on);
+}
+
+// ----------------------------
+// Header controls (DOCK ONLY)
+// ----------------------------
+function bindHeaderControls() {
+  const closeBtn = uiId("aa-close-btn");
+  if (closeBtn) closeBtn.onclick = hidePanel;
+
+  const grip = uiId(OVERLAY_GRIP_ID);
+  if (grip) grip.onclick = hidePanel;
+}
+
+  // ----------------------------
+  // App config
+  // ----------------------------
   const SHOP_CONFIG = {
     defaultMonths: 6,
     defaultMiles: 6000,
@@ -47,6 +101,54 @@
     "purple"
   ];
 
+  // ----------------------------
+  // Cloud Run fetch (background proxy)
+  // ----------------------------
+  function cloudRunFetch(path, options = {}) {
+    const url = `${CLOUD_RUN_URL}${path.startsWith("/") ? "" : "/"}${path}`;
+
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage(
+          {
+            __aa: true,
+            type: "CLOUDRUN_FETCH",
+            payload: {
+              url,
+              method: options.method || "GET",
+              headers: options.headers || {},
+              body: options.body || null,
+              timeoutMs: options.timeoutMs || 25000
+            }
+          },
+          (resp) => {
+            const err = chrome.runtime.lastError;
+            if (err) return reject(new Error(err.message || "Background message failed"));
+            if (!resp) return reject(new Error("No response from background"));
+
+            if (!resp.ok) {
+              const msg =
+                resp.error ||
+                (typeof resp.data === "string" ? resp.data : "") ||
+                `Request failed (${resp.status || "unknown"})`;
+              const e = new Error(msg);
+              e.status = resp.status || 0;
+              e.data = resp.data;
+              return reject(e);
+            }
+
+            resolve(resp.data);
+          }
+        );
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  // ----------------------------
+  // Layout offset detection
+  // ----------------------------
   function detectTopOffset() {
     const preferredSelectors = [
       ".MuiAppBar-root",
@@ -71,6 +173,7 @@
 
     if (bestBottom > 0) return bestBottom;
 
+    // Fallback scan for fixed/sticky bars
     const all = document.querySelectorAll("body *");
     all.forEach((el) => {
       if (!(el instanceof HTMLElement)) return;
@@ -104,23 +207,24 @@
   }
 
   function setPanelTopOffset() {
-    const topOffset = getPanelTopOffset();
-    document.documentElement.style.setProperty(PANEL_TOP_OFFSET_VAR, `${topOffset}px`);
+  const topOffset = getPanelTopOffset();
+  document.documentElement.style.setProperty(PANEL_TOP_OFFSET_VAR, `${topOffset}px`);
 
-    const panel = document.getElementById(PANEL_ID);
-    if (panel) {
-      panel.style.top = `${topOffset}px`;
-      panel.style.height = `calc(100vh - ${topOffset}px)`;
-    }
+  const panel = panelHostEl || docId(PANEL_ID);
+  if (panel) {
+    panel.style.top = `${topOffset}px`;
+    panel.style.height = `calc(100vh - ${topOffset}px)`;
   }
+}
 
+  // ----------------------------
+  // Mileage math
+  // ----------------------------
   function getProjectedMileage(monthInterval) {
     const currentMileage = panelState.roData?.mileage ?? null;
     const avgMilesPerDay = panelState.vehicleAvgMilesPerDay ?? null;
 
-    if (!Number.isFinite(currentMileage)) {
-      return null;
-    }
+    if (!Number.isFinite(currentMileage)) return null;
 
     if (!Number.isFinite(avgMilesPerDay)) {
       return currentMileage + monthInterval * 1000;
@@ -128,27 +232,7 @@
 
     const daysAhead = monthInterval * 30.4375;
     const projectedIncrease = avgMilesPerDay * daysAhead;
-
     return Math.round(currentMileage + projectedIncrease);
-  }
-
-  function getProjectedMonthsFromMileage(targetMileage) {
-    const currentMileage = panelState.roData?.mileage ?? null;
-    const avgMilesPerDay = panelState.vehicleAvgMilesPerDay ?? null;
-
-    if (!Number.isFinite(currentMileage)) return panelState.monthInterval;
-    if (!Number.isFinite(avgMilesPerDay) || avgMilesPerDay <= 0) {
-      const milesAhead = targetMileage - currentMileage;
-      return Math.max(1, Math.round(milesAhead / 1000));
-    }
-
-    const milesAhead = targetMileage - currentMileage;
-    if (milesAhead <= 0) return 1;
-
-    const daysAhead = milesAhead / avgMilesPerDay;
-    const monthsAhead = daysAhead / 30.4375;
-
-    return Math.max(1, Math.round(monthsAhead));
   }
 
   function getMileageMathBreakdown(monthInterval) {
@@ -190,18 +274,9 @@
     const count = panelState.vehicleDataPointCount;
     const span = panelState.vehicleHistorySpanDays;
 
-    if (!count || count < 2 || !span) {
-      return { label: "Low", tone: "low" };
-    }
-
-    if (count >= 5 && span >= 365) {
-      return { label: "High", tone: "high" };
-    }
-
-    if (count >= 3 && span >= 180) {
-      return { label: "Medium", tone: "medium" };
-    }
-
+    if (!count || count < 2 || !span) return { label: "Low", tone: "low" };
+    if (count >= 5 && span >= 365) return { label: "High", tone: "high" };
+    if (count >= 3 && span >= 180) return { label: "Medium", tone: "medium" };
     return { label: "Low", tone: "low" };
   }
 
@@ -209,22 +284,21 @@
     const avgMilesPerDay = panelState.vehicleAvgMilesPerDay;
     const targetMiles = SHOP_CONFIG.smartTargetMiles;
 
-    if (!Number.isFinite(avgMilesPerDay) || avgMilesPerDay <= 0) {
-      return null;
-    }
+    if (!Number.isFinite(avgMilesPerDay) || avgMilesPerDay <= 0) return null;
 
     const milesPerMonth = avgMilesPerDay * 30.4375;
     const rawMonths = targetMiles / milesPerMonth;
-
     const rounded = Math.round(rawMonths);
 
     if (rounded >= SHOP_CONFIG.minMonths && rounded <= SHOP_CONFIG.maxMonths) {
       return rounded;
     }
-
     return null;
   }
 
+  // ----------------------------
+  // Panel state persistence
+  // ----------------------------
   function getDefaultPanelState() {
     return {
       screen: 1,
@@ -283,16 +357,10 @@
     next.mileInterval = Number(rawState.mileInterval) || SHOP_CONFIG.defaultMiles;
     next.appointment = {
       date: rawState.appointment?.date ? new Date(rawState.appointment.date) : null,
-      mileage: Number.isFinite(rawState.appointment?.mileage)
-        ? rawState.appointment.mileage
-        : null,
+      mileage: Number.isFinite(rawState.appointment?.mileage) ? rawState.appointment.mileage : null,
       type: rawState.appointment?.type === "wait" ? "wait" : "dropoff",
-      hour: Number.isFinite(rawState.appointment?.hour)
-        ? rawState.appointment.hour
-        : 8,
-      color: TEKMETRIC_COLORS.includes(rawState.appointment?.color)
-        ? rawState.appointment.color
-        : "navy"
+      hour: Number.isFinite(rawState.appointment?.hour) ? rawState.appointment.hour : 8,
+      color: TEKMETRIC_COLORS.includes(rawState.appointment?.color) ? rawState.appointment.color : "navy"
     };
     next.appointmentCounts = rawState.appointmentCounts ?? {};
     next.appointmentCountWeekKey = rawState.appointmentCountWeekKey ?? null;
@@ -301,19 +369,11 @@
     next.timeSlotCountsDateKey = rawState.timeSlotCountsDateKey ?? null;
     next.timeSlotCountsLoading = false;
     next.hasUserSelectedMonthInterval = rawState.hasUserSelectedMonthInterval === true;
-    next.repeatServices = Array.isArray(rawState.repeatServices)
-      ? rawState.repeatServices
-      : [];
-    next.declinedServices = Array.isArray(rawState.declinedServices)
-      ? rawState.declinedServices
-      : [];
+    next.repeatServices = Array.isArray(rawState.repeatServices) ? rawState.repeatServices : [];
+    next.declinedServices = Array.isArray(rawState.declinedServices) ? rawState.declinedServices : [];
     next.customerNotes = typeof rawState.customerNotes === "string" ? rawState.customerNotes : "";
-    next.scheduledAppointmentId = rawState.scheduledAppointmentId
-      ? String(rawState.scheduledAppointmentId)
-      : null;
-    next.scheduledStartTime = rawState.scheduledStartTime
-      ? new Date(rawState.scheduledStartTime)
-      : null;
+    next.scheduledAppointmentId = rawState.scheduledAppointmentId ? String(rawState.scheduledAppointmentId) : null;
+    next.scheduledStartTime = rawState.scheduledStartTime ? new Date(rawState.scheduledStartTime) : null;
     next.isConfirmed = rawState.isConfirmed === true;
     return next;
   }
@@ -338,6 +398,9 @@
     } catch {}
   }
 
+  // ----------------------------
+  // RO helpers + Cloud calls
+  // ----------------------------
   function getRoIdFromUrl() {
     const match = window.location.pathname.match(/repair-orders\/(\d+)/);
     return match ? match[1] : null;
@@ -350,17 +413,17 @@
   }
 
   async function fetchRoData(roId) {
-    const response = await fetch(`${CLOUD_RUN_URL}/ro/${roId}`);
-    if (!response.ok) throw new Error("Failed to fetch RO data");
-    return response.json();
+    const data = await cloudRunFetch(`/ro/${encodeURIComponent(roId)}`);
+    if (!data || data.success === false) throw new Error("Failed to fetch RO data");
+    return data;
   }
 
   async function fetchVehicleHistory(vehicleId, shopId) {
-    const response = await fetch(
-      `${CLOUD_RUN_URL}/vehicle-history/${vehicleId}?shopId=${shopId}`
+    const data = await cloudRunFetch(
+      `/vehicle-history/${encodeURIComponent(vehicleId)}?shopId=${encodeURIComponent(shopId)}`
     );
-    if (!response.ok) throw new Error("Failed to fetch vehicle history");
-    return response.json();
+    if (!data || data.success === false) throw new Error("Failed to fetch vehicle history");
+    return data;
   }
 
   function getDateKey(date) {
@@ -377,13 +440,10 @@
       startDate: getDateKey(startDate),
       endDate: getDateKey(endDate)
     });
+
     try {
-      const response = await fetch(
-        `${CLOUD_RUN_URL}/appointments/counts?${params.toString()}`
-      );
-      if (!response.ok) return {};
-      const result = await response.json();
-      if (!result.success || !result.counts) return {};
+      const result = await cloudRunFetch(`/appointments/counts?${params.toString()}`);
+      if (!result || !result.success || !result.counts) return {};
       return result.counts;
     } catch {
       return {};
@@ -446,14 +506,13 @@
     return normalized;
   }
 
-
   function getAppointmentTypeKey(appointment) {
     const rawType = String(
       appointment?.appointmentType ??
-      appointment?.type ??
-      appointment?.appointment_type ??
-      appointment?.visitType ??
-      ""
+        appointment?.type ??
+        appointment?.appointment_type ??
+        appointment?.visitType ??
+        ""
     ).toLowerCase();
 
     if (rawType.includes("wait")) return "wait";
@@ -520,19 +579,21 @@
 
     const requestList = async (extraParams = {}) => {
       const params = new URLSearchParams({ ...baseParams, ...extraParams });
-      const response = await fetch(`${CLOUD_RUN_URL}/appointments?${params.toString()}`);
-      if (!response.ok) return null;
-      const result = await response.json();
+      try {
+        const result = await cloudRunFetch(`/appointments?${params.toString()}`);
 
-      const items =
-        result?.appointments ??
-        result?.data?.appointments ??
-        result?.data ??
-        result?.results ??
-        null;
+        const items =
+          result?.appointments ??
+          result?.data?.appointments ??
+          result?.data ??
+          result?.results ??
+          null;
 
-      if (!Array.isArray(items)) return null;
-      return normalizeAppointmentListCounts(items, selectedDate);
+        if (!Array.isArray(items)) return null;
+        return normalizeAppointmentListCounts(items, selectedDate);
+      } catch {
+        return null;
+      }
     };
 
     try {
@@ -566,11 +627,13 @@
 
     const requestCounts = async (extraParams = {}) => {
       const params = new URLSearchParams({ ...baseParams, ...extraParams });
-      const response = await fetch(`${CLOUD_RUN_URL}/appointments/counts?${params.toString()}`);
-      if (!response.ok) return null;
-      const result = await response.json();
-      if (!result.success) return null;
-      return normalizeTimeCountResponse(result, selectedDate);
+      try {
+        const result = await cloudRunFetch(`/appointments/counts?${params.toString()}`);
+        if (!result || !result.success) return null;
+        return normalizeTimeCountResponse(result, selectedDate);
+      } catch {
+        return null;
+      }
     };
 
     try {
@@ -594,6 +657,9 @@
     }
   }
 
+  // ----------------------------
+  // Date/format helpers
+  // ----------------------------
   function addMonths(date, months) {
     const d = new Date(date);
     d.setMonth(d.getMonth() + months);
@@ -669,19 +735,21 @@
 
     const dayOfWeek = targetDate.getDay();
     const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-
     const monday = addDays(targetDate, -daysSinceMonday);
     return [0, 1, 2, 3, 4].map((offset) => addDays(monday, offset));
   }
 
+  // ----------------------------
+  // Jobs selection
+  // ----------------------------
   function getNormalizedJobStatus(job) {
     return String(
       job?.authorizationStatus ??
-      job?.authorizedStatus ??
-      job?.approvalStatus ??
-      job?.appointmentStatus ??
-      job?.status ??
-      ""
+        job?.authorizedStatus ??
+        job?.approvalStatus ??
+        job?.appointmentStatus ??
+        job?.status ??
+        ""
     )
       .trim()
       .toUpperCase();
@@ -699,7 +767,6 @@
       if (key) seen.add(key);
       rows.push(job);
     }
-
     return rows;
   }
 
@@ -708,7 +775,8 @@
     if (job?.authorized === true || job?.approved === true || job?.isApproved === true) return true;
     if (typeof status === "string") {
       if (status.includes("DECLIN") || status.includes("REJECT")) return false;
-      if (status.includes("AUTH") || status.includes("APPROV") || status.includes("SOLD") || status.includes("COMPLETE")) return true;
+      if (status.includes("AUTH") || status.includes("APPROV") || status.includes("SOLD") || status.includes("COMPLETE"))
+        return true;
     }
     return false;
   }
@@ -734,9 +802,12 @@
     return job?.name ?? job?.title ?? job?.description ?? "Unnamed Service";
   }
 
+  // ----------------------------
+  // Dock shift mechanics
+  // ----------------------------
   function getShiftTargets() {
     return [
-      document.getElementById("root"),
+      docId("root"),
       document.querySelector(".MuiDrawer-paperAnchorRight"),
       document.querySelector("#kt_app_sidebar")
     ].filter((el) => el instanceof HTMLElement);
@@ -744,6 +815,7 @@
 
   function applyShiftToTarget(target) {
     if (!(target instanceof HTMLElement)) return;
+
     if (target.dataset.aaShifted !== "1") {
       target.dataset.aaShifted = "1";
       target.dataset.aaOriginalMarginRight = target.style.marginRight || "";
@@ -757,13 +829,11 @@
 
     const priorTransition = target.dataset.aaOriginalTransition || "";
     const marginTransition = `margin-right var(--aa-panel-motion-ms) var(--aa-panel-ease)`;
-    target.style.transition = priorTransition
-      ? `${priorTransition}, ${marginTransition}`
-      : marginTransition;
+    target.style.transition = priorTransition ? `${priorTransition}, ${marginTransition}` : marginTransition;
   }
 
   function restoreShiftTargets() {
-    document.querySelectorAll('[data-aa-shifted="1"]').forEach((node) => {
+    docAll('[data-aa-shifted="1"]').forEach((node) => {
       if (!(node instanceof HTMLElement)) return;
       node.style.marginRight = node.dataset.aaOriginalMarginRight || "";
       node.style.transition = node.dataset.aaOriginalTransition || "";
@@ -786,7 +856,7 @@
   }
 
   function getSidebarOpenerCandidates() {
-    const nodes = document.querySelectorAll("button, [role=\"button\"], .MuiIconButton-root, .MuiButtonBase-root");
+    const nodes = document.querySelectorAll('button, [role="button"], .MuiIconButton-root, .MuiButtonBase-root');
     const candidates = [];
 
     nodes.forEach((node) => {
@@ -830,8 +900,7 @@
   }
 
   function restoreSidebarOpeners() {
-    const nudged = document.querySelectorAll("[data-aa-nudged=\"1\"]");
-    nudged.forEach((node) => {
+    docAll('[data-aa-nudged="1"]').forEach((node) => {
       if (!(node instanceof HTMLElement)) return;
       node.style.transform = node.dataset.aaOriginalTransform || "";
       node.style.zIndex = node.dataset.aaOriginalZIndex || "";
@@ -841,57 +910,85 @@
     });
   }
 
-  function injectStyles() {
-    if (document.getElementById(STYLE_ID)) return;
+  // ----------------------------
+  // Styles
+  // ----------------------------
+  function injectGlobalStyles() {
+    if (docId(GLOBAL_STYLE_ID)) return;
 
     const style = document.createElement("style");
-    style.id = STYLE_ID;
+    style.id = GLOBAL_STYLE_ID;
+    style.textContent = `
+  :root {
+    --aa-panel-motion-ms: ${PANEL_MOTION_MS}ms;
+    --aa-panel-fade-ms: ${PANEL_FADE_MS}ms;
+    --aa-panel-ease: ${PANEL_EASE};
+    --aa-panel-width: ${PANEL_WIDTH}px;
+  }
+
+  html[data-aa-panel-open="1"] { overflow-x: hidden; }
+
+  /* Host panel element (outside shadow) */
+  #${PANEL_ID}{
+    position: fixed;
+    top: var(${PANEL_TOP_OFFSET_VAR}, 0px);
+    right: 0;
+    width: ${PANEL_WIDTH}px;
+    height: calc(100vh - var(${PANEL_TOP_OFFSET_VAR}, 0px));
+    z-index: 999999;
+    transform: translate3d(100%, 0, 0) scale(0.985);
+    transform-origin: right center;
+    opacity: 0;
+    filter: blur(2px);
+    transition:
+      transform var(--aa-panel-motion-ms) var(--aa-panel-ease),
+      opacity var(--aa-panel-fade-ms) var(--aa-panel-ease),
+      filter var(--aa-panel-fade-ms) var(--aa-panel-ease);
+    will-change: transform, opacity, filter;
+    background: transparent;
+  }
+  #${PANEL_ID}.aa-visible { transform: translate3d(0, 0, 0) scale(1); opacity: 1; filter: blur(0); }
+  #${PANEL_ID}.aa-launching { transform: translate3d(0, 0, 0) scale(0.998); }
+
+  /* Subtle orange glow on page while sidebar is open */
+  .${PAGE_GLOW_CLASS} body{
+    box-shadow: inset 0 0 0 2px rgba(249,115,22,0.20);
+  }
+`;
+    document.head.appendChild(style);
+  }
+
+  function injectShadowStyles() {
+    if (!panelShadow) return;
+    if (panelShadow.querySelector(`#${SHADOW_STYLE_ID}`)) return;
+
+    const style = document.createElement("style");
+    style.id = SHADOW_STYLE_ID;
     style.textContent = `
       @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&display=swap');
 
-      :root {
-        --aa-panel-motion-ms: ${PANEL_MOTION_MS}ms;
-        --aa-panel-fade-ms: ${PANEL_FADE_MS}ms;
-        --aa-panel-ease: ${PANEL_EASE};
-      }
+      :host { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif; }
 
-      :root {
-  --aa-panel-width: ${PANEL_WIDTH}px;
-}
-
-html[data-aa-panel-open="1"] {
-  overflow-x: hidden;
-}
-
-
-      #${PANEL_ID} {
-        position: fixed;
-        top: var(${PANEL_TOP_OFFSET_VAR}, 0px);
-        right: 0;
-        width: ${PANEL_WIDTH}px;
-        height: calc(100vh - var(${PANEL_TOP_OFFSET_VAR}, 0px));
+      /* Shadow root container */
+      #aa-shadow-root{
+        height: 100%;
+        display: flex;
+        flex-direction: column;
         background: #FBFBFC;
         border-left: 1px solid #E8E8EC;
         box-shadow: -24px 0 50px rgba(17, 24, 39, 0.08), -4px 0 14px rgba(17, 24, 39, 0.06);
-        z-index: 999999;
-        display: flex; flex-direction: column;
-        transform: translate3d(100%, 0, 0) scale(0.985);
-        transform-origin: right center;
-        opacity: 0;
-        filter: blur(2px);
-        transition:
-          transform var(--aa-panel-motion-ms) var(--aa-panel-ease),
-          opacity var(--aa-panel-fade-ms) var(--aa-panel-ease),
-          filter var(--aa-panel-fade-ms) var(--aa-panel-ease);
-        font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-        font-size: 13px; color: #1A1A2E;
         overflow: hidden;
-        will-change: transform, opacity, filter;
-      }
-      #${PANEL_ID}.aa-visible { transform: translate3d(0, 0, 0) scale(1); opacity: 1; filter: blur(0); }
-      #${PANEL_ID}.aa-launching { transform: translate3d(0, 0, 0) scale(0.998); }
+        position: relative;
+        border-radius: 0;
+        font-size: 13px;
+        color: #1A1A2E;
+  }
 
+      
+      
+      
 
+      /* Nudgeable stuff */
       [data-aa-nudged='1'] {
         transition: transform var(--aa-panel-motion-ms) var(--aa-panel-ease), z-index 0s linear;
         will-change: transform;
@@ -910,6 +1007,8 @@ html[data-aa-panel-open="1"] {
         position: relative; z-index: 3;
         flex-shrink: 0;
       }
+    
+
       .aa-header-back {
         width: 28px; height: 28px; border-radius: 8px;
         border: 1px solid #E0E0E8; background: #fff;
@@ -1058,7 +1157,7 @@ html[data-aa-panel-open="1"] {
       @keyframes aa-fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
       .aa-animate-in { animation: aa-fade-in 0.3s ease forwards; }
     `;
-    document.head.appendChild(style);
+    panelShadow.appendChild(style);
   }
 
   function getColorHex(name) {
@@ -1077,26 +1176,36 @@ html[data-aa-panel-open="1"] {
     return map[name] || "#1e3a8a";
   }
 
+  // ----------------------------
+  // UI HTML helpers
+  // ----------------------------
   function stepsHTML(activeStep) {
     const labels = ["Schedule", "Details", "Confirm"];
-    return `<div class="aa-steps">${labels.map((label, i) => {
-      const num = i + 1;
-      const cls = num < activeStep ? "done" : num === activeStep ? "active" : "";
-      const line = i < labels.length - 1
-        ? `<div class="aa-step-line ${num < activeStep ? "done" : ""}"></div>`
-        : "";
-      return `<div class="aa-step ${cls}"><div class="aa-step-num">${num < activeStep ? "✓" : num}</div><span>${label}</span></div>${line}`;
-    }).join("")}</div>`;
+    return `<div class="aa-steps">${labels
+      .map((label, i) => {
+        const num = i + 1;
+        const cls = num < activeStep ? "done" : num === activeStep ? "active" : "";
+        const line =
+          i < labels.length - 1
+            ? `<div class="aa-step-line ${num < activeStep ? "done" : ""}"></div>`
+            : "";
+        return `<div class="aa-step ${cls}"><div class="aa-step-num">${
+          num < activeStep ? "✓" : num
+        }</div><span>${label}</span></div>${line}`;
+      })
+      .join("")}</div>`;
   }
 
   function headerHTML({ title, subtitle, showBack, showClose }) {
-    return `<div class="aa-header">
-      ${showBack ? `<div class="aa-header-back" id="aa-back-btn">←</div>` : ""}
-      <div class="aa-header-info">
-        <div class="aa-header-title">${title}</div>
-        ${subtitle ? `<div class="aa-header-meta">${subtitle}</div>` : ""}
-      </div>
-      ${showClose !== false ? `<button class="aa-header-close" id="aa-close-btn" title="Close">✕</button>` : ""}
+  return `<div class="aa-header">
+    ${showBack ? `<div class="aa-header-back" id="aa-back-btn">←</div>` : ""}
+    <div class="aa-header-info">
+      <div class="aa-header-title">${title}</div>
+      ${subtitle ? `<div class="aa-header-meta">${subtitle}</div>` : ""}
+    </div>
+    ${showClose !== false ? `<button class="aa-header-close" id="aa-close-btn" title="Close">✕</button>` : ""}
+  </div>`;
+}
     </div>`;
   }
 
@@ -1106,12 +1215,16 @@ html[data-aa-panel-open="1"] {
   }
 
   function bindOpenSchedulerButtons(dateOverride) {
-    document.querySelectorAll("[data-aa-open-scheduler='1']").forEach((btn) => {
+    if (!panelShadow) return;
+    panelShadow.querySelectorAll("[data-aa-open-scheduler='1']").forEach((btn) => {
       if (!(btn instanceof HTMLElement)) return;
       btn.onclick = () => openFullScheduler(dateOverride);
     });
   }
 
+  // ----------------------------
+  // Rendering screens
+  // ----------------------------
   function renderCurrentScreen(panel) {
     if (panelState.screen === 2) return renderScreen2(panel);
     if (panelState.screen === 3) return renderScreen3(panel);
@@ -1132,7 +1245,11 @@ html[data-aa-panel-open="1"] {
     const weekEnd = dateOptions[dateOptions.length - 1];
     const nextWeekKey = `${panelState.roData?.shopId ?? ""}:${getDateKey(weekStart)}:${getDateKey(weekEnd)}`;
 
-    if (panelState.roData?.shopId && panelState.appointmentCountWeekKey !== nextWeekKey && !panelState.appointmentCountsLoading) {
+    if (
+      panelState.roData?.shopId &&
+      panelState.appointmentCountWeekKey !== nextWeekKey &&
+      !panelState.appointmentCountsLoading
+    ) {
       panelState.appointmentCountsLoading = true;
       panelState.appointmentCountWeekKey = nextWeekKey;
       fetchAppointmentCounts(panelState.roData.shopId, weekStart, weekEnd)
@@ -1146,18 +1263,12 @@ html[data-aa-panel-open="1"] {
     }
 
     const selectedDate = panelState.appointment.date ? new Date(panelState.appointment.date) : null;
-    const selectedInOptions = selectedDate
-      ? dateOptions.some((d) => d.toDateString() === selectedDate.toDateString())
-      : false;
+    const selectedInOptions = selectedDate ? dateOptions.some((d) => d.toDateString() === selectedDate.toDateString()) : false;
     if (!selectedInOptions) panelState.appointment.date = new Date(dateOptions[0]);
 
     const roNumber = data?.roNumber ?? "—";
-    const customerName = data?.customer
-      ? `${data.customer.firstName ?? ""} ${data.customer.lastName ?? ""}`.trim()
-      : "";
-    const vehicleDisplay = data?.vehicle
-      ? `${data.vehicle.year ?? ""} ${data.vehicle.make ?? ""} ${data.vehicle.model ?? ""}`.trim()
-      : "";
+    const customerName = data?.customer ? `${data.customer.firstName ?? ""} ${data.customer.lastName ?? ""}`.trim() : "";
+    const vehicleDisplay = data?.vehicle ? `${data.vehicle.year ?? ""} ${data.vehicle.make ?? ""} ${data.vehicle.model ?? ""}`.trim() : "";
 
     const recommendedMonth = getSmartRecommendedMonth();
     if (recommendedMonth && !panelState.hasUserSelectedMonthInterval && panelState.monthInterval === SHOP_CONFIG.defaultMonths) {
@@ -1165,7 +1276,7 @@ html[data-aa-panel-open="1"] {
     }
 
     panel.innerHTML = `
-      ${headerHTML({ title: "Advance Appointment Scheduler", subtitle: `RO #${roNumber} · ${customerName} · ${vehicleDisplay}` , showBack: false })}
+      ${headerHTML({ title: "Advance Appointment Scheduler", subtitle: `RO #${roNumber} · ${customerName} · ${vehicleDisplay}`, showBack: false })}
       ${stepsHTML(1)}
       <div class="aa-scroll">
         <div class="aa-content">
@@ -1207,9 +1318,9 @@ html[data-aa-panel-open="1"] {
       </div>
     `;
 
-    document.getElementById("aa-close-btn").onclick = hidePanel;
+    bindHeaderControls();
 
-    const monthSelect = document.getElementById("aa-month-interval");
+    const monthSelect = uiId("aa-month-interval");
     for (let i = SHOP_CONFIG.minMonths; i <= SHOP_CONFIG.maxMonths; i++) {
       const opt = document.createElement("option");
       opt.value = i;
@@ -1219,7 +1330,7 @@ html[data-aa-panel-open="1"] {
     }
     monthSelect.classList.toggle("aa-select-recommended", panelState.monthInterval === recommendedMonth);
 
-    const recArea = document.getElementById("aa-rec-area");
+    const recArea = uiId("aa-rec-area");
     if (recommendedMonth && panelState.monthInterval === recommendedMonth) {
       recArea.innerHTML = `<div class="aa-rec-badge">
         <svg viewBox="0 0 16 16" fill="none"><path d="M8 1l2.1 4.2L15 6l-3.5 3.4.8 4.8L8 12l-4.3 2.2.8-4.8L1 6l4.9-.8L8 1z" fill="#3B82F6"/></svg>
@@ -1238,7 +1349,7 @@ html[data-aa-panel-open="1"] {
       renderScreen1(panel);
     };
 
-    const mileSelect = document.getElementById("aa-mile-interval");
+    const mileSelect = uiId("aa-mile-interval");
     const avgMilesPerDay = panelState.vehicleAvgMilesPerDay ?? null;
 
     for (let month = SHOP_CONFIG.minMonths; month <= SHOP_CONFIG.maxMonths; month++) {
@@ -1267,7 +1378,7 @@ html[data-aa-panel-open="1"] {
     };
 
     const breakdown = getMileageMathBreakdown(panelState.monthInterval);
-    const tooltipEl = document.getElementById("aa-mileage-tooltip");
+    const tooltipEl = uiId("aa-mileage-tooltip");
     if (breakdown && tooltipEl) {
       if (breakdown.fallback) {
         tooltipEl.innerHTML = `
@@ -1303,12 +1414,14 @@ html[data-aa-panel-open="1"] {
       }
     }
 
-    const dateContainer = document.getElementById("aa-date-buttons");
+    const dateContainer = uiId("aa-date-buttons");
     dateOptions.forEach((date) => {
       const btn = document.createElement("button");
       btn.className = "aa-date-btn";
       const count = panelState.appointmentCounts[getDateKey(date)] ?? 0;
-      const isActive = panelState.appointment.date && new Date(panelState.appointment.date).toDateString() === new Date(date).toDateString();
+      const isActive =
+        panelState.appointment.date &&
+        new Date(panelState.appointment.date).toDateString() === new Date(date).toDateString();
       if (isActive) btn.classList.add("active");
       btn.innerHTML = `
         <span class="aa-date-dow">${date.toLocaleDateString(undefined, { weekday: "short" })}</span>
@@ -1324,12 +1437,12 @@ html[data-aa-panel-open="1"] {
       dateContainer.appendChild(btn);
     });
 
-    document.getElementById("aa-appointment-counts-status").textContent =
+    uiId("aa-appointment-counts-status").textContent =
       panelState.appointmentCountsLoading ? "Loading availability…" : "";
 
     bindOpenSchedulerButtons(panelState.appointment.date);
 
-    document.getElementById("aa-continue-btn").onclick = () => {
+    uiId("aa-continue-btn").onclick = () => {
       panelState.screen = 2;
       persistPanelState();
       renderScreen2(panel);
@@ -1344,9 +1457,7 @@ html[data-aa-panel-open="1"] {
     if (!selectedDate || !shopId) return;
 
     const selectedDateKey = getDateKey(selectedDate);
-    if (panelState.timeSlotCountsDateKey === selectedDateKey || panelState.timeSlotCountsLoading) {
-      return;
-    }
+    if (panelState.timeSlotCountsDateKey === selectedDateKey || panelState.timeSlotCountsLoading) return;
 
     panelState.timeSlotCountsLoading = true;
 
@@ -1371,13 +1482,22 @@ html[data-aa-panel-open="1"] {
   function renderScreen2(panel) {
     panelState.screen = 2;
     const roData = panelState.roData;
-    const performedWithIds = getPerformedJobs(roData).map((j, idx) => ({ ...j, _stableId: String(j.id ?? j.jobId ?? `p${idx}`) }));
-    const declinedWithIds = getDeclinedJobs(roData).map((j, idx) => ({ ...j, _stableId: String(j.id ?? j.jobId ?? `d${idx}`) }));
+
+    const performedWithIds = getPerformedJobs(roData).map((j, idx) => ({
+      ...j,
+      _stableId: String(j.id ?? j.jobId ?? `p${idx}`)
+    }));
+    const declinedWithIds = getDeclinedJobs(roData).map((j, idx) => ({
+      ...j,
+      _stableId: String(j.id ?? j.jobId ?? `d${idx}`)
+    }));
 
     panel.innerHTML = `
       ${headerHTML({
         title: "Appointment Details",
-        subtitle: `${formatShortDate(panelState.appointment.date)} · ${panelState.appointment.mileage ? formatMiles(panelState.appointment.mileage) + " mi" : "mileage TBD"}`,
+        subtitle: `${formatShortDate(panelState.appointment.date)} · ${
+          panelState.appointment.mileage ? formatMiles(panelState.appointment.mileage) + " mi" : "mileage TBD"
+        }`,
         showBack: true
       })}
       ${stepsHTML(2)}
@@ -1400,16 +1520,23 @@ html[data-aa-panel-open="1"] {
           <div class="aa-section">
             <div class="aa-section-label">Repeat Services</div>
             <div id="aa-repeat-list">
-              ${performedWithIds.length === 0
-                ? `<div class="aa-empty-note">No performed services on this RO</div>`
-                : performedWithIds.map((j) => {
-                    const checked = panelState.repeatServices.includes(j._stableId);
-                    return `<div class="aa-check-item ${checked ? "checked" : ""}" data-id="${j._stableId}" data-group="repeat">
-                      <div class="aa-check-box">${checked ? `<svg viewBox="0 0 10 10" fill="none"><path d="M2 5l2.5 2.5L8 3" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>` : ""}</div>
-                      <span class="aa-check-name">${getJobName(j)}</span>
-                      <button class="aa-check-expand">▾</button>
-                    </div>`;
-                  }).join("")
+              ${
+                performedWithIds.length === 0
+                  ? `<div class="aa-empty-note">No performed services on this RO</div>`
+                  : performedWithIds
+                      .map((j) => {
+                        const checked = panelState.repeatServices.includes(j._stableId);
+                        return `<div class="aa-check-item ${checked ? "checked" : ""}" data-id="${j._stableId}" data-group="repeat">
+                          <div class="aa-check-box">${
+                            checked
+                              ? `<svg viewBox="0 0 10 10" fill="none"><path d="M2 5l2.5 2.5L8 3" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+                              : ""
+                          }</div>
+                          <span class="aa-check-name">${getJobName(j)}</span>
+                          <button class="aa-check-expand">▾</button>
+                        </div>`;
+                      })
+                      .join("")
               }
             </div>
           </div>
@@ -1417,16 +1544,23 @@ html[data-aa-panel-open="1"] {
           <div class="aa-section">
             <div class="aa-section-label">Declined Services</div>
             <div id="aa-declined-list">
-              ${declinedWithIds.length === 0
-                ? `<div class="aa-empty-note">No declined services on this RO</div>`
-                : declinedWithIds.map((j) => {
-                    const checked = panelState.declinedServices.includes(j._stableId);
-                    return `<div class="aa-check-item ${checked ? "checked" : ""}" data-id="${j._stableId}" data-group="declined">
-                      <div class="aa-check-box">${checked ? `<svg viewBox="0 0 10 10" fill="none"><path d="M2 5l2.5 2.5L8 3" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>` : ""}</div>
-                      <span class="aa-check-name">${getJobName(j)}</span>
-                      <button class="aa-check-expand">▾</button>
-                    </div>`;
-                  }).join("")
+              ${
+                declinedWithIds.length === 0
+                  ? `<div class="aa-empty-note">No declined services on this RO</div>`
+                  : declinedWithIds
+                      .map((j) => {
+                        const checked = panelState.declinedServices.includes(j._stableId);
+                        return `<div class="aa-check-item ${checked ? "checked" : ""}" data-id="${j._stableId}" data-group="declined">
+                          <div class="aa-check-box">${
+                            checked
+                              ? `<svg viewBox="0 0 10 10" fill="none"><path d="M2 5l2.5 2.5L8 3" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+                              : ""
+                          }</div>
+                          <span class="aa-check-name">${getJobName(j)}</span>
+                          <button class="aa-check-expand">▾</button>
+                        </div>`;
+                      })
+                      .join("")
               }
             </div>
           </div>
@@ -1450,19 +1584,20 @@ html[data-aa-panel-open="1"] {
       </div>
     `;
 
-    document.getElementById("aa-close-btn").onclick = hidePanel;
-    document.getElementById("aa-back-btn").onclick = () => {
+    bindHeaderControls();
+
+    uiId("aa-back-btn").onclick = () => {
       panelState.screen = 1;
       persistPanelState();
       renderScreen1(panel);
     };
 
-    document.getElementById("aa-type-dropoff").onclick = () => {
+    uiId("aa-type-dropoff").onclick = () => {
       panelState.appointment.type = "dropoff";
       persistPanelState();
       renderScreen2(panel);
     };
-    document.getElementById("aa-type-wait").onclick = () => {
+    uiId("aa-type-wait").onclick = () => {
       panelState.appointment.type = "wait";
       persistPanelState();
       renderScreen2(panel);
@@ -1470,17 +1605,14 @@ html[data-aa-panel-open="1"] {
 
     loadTimeSlotCountsForSelectedDate(panel);
 
-    const timeGrid = document.getElementById("aa-time-grid");
+    const timeGrid = uiId("aa-time-grid");
     if (!timeGrid) return;
 
-    // Defensive compatibility: keep this map defined in case a cached extension build
-    // still references activeTypeCounts during time-button rendering.
     const activeTypeCounts = panelState.timeSlotCounts?.[panelState.appointment.type] ?? {};
     void activeTypeCounts;
 
     getHourlyTimeOptions().forEach((hour) => {
       const btn = document.createElement("button");
-      const bookedCount = activeTypeCounts[hour] ?? 0;
       btn.className = `aa-time-btn ${hour === panelState.appointment.hour ? "active" : ""}`;
       btn.innerHTML = `<span class="aa-time-label">${formatHourLabel(hour)}</span>`;
       btn.onclick = () => {
@@ -1491,19 +1623,21 @@ html[data-aa-panel-open="1"] {
       timeGrid.appendChild(btn);
     });
 
-    const timeCountStatus = document.getElementById("aa-time-counts-status");
+    const timeCountStatus = uiId("aa-time-counts-status");
     if (timeCountStatus) {
       timeCountStatus.textContent = panelState.timeSlotCountsLoading ? "Loading scheduler counts…" : "";
     }
 
     function setupCheckList(containerId, stateKey) {
-      const container = document.getElementById(containerId);
+      const container = uiId(containerId);
       if (!container) return;
+
       container.querySelectorAll(".aa-check-item").forEach((item) => {
         const id = item.getAttribute("data-id");
 
         item.addEventListener("click", (e) => {
           if (e.target.closest(".aa-check-expand")) return;
+
           const isChecked = panelState[stateKey].includes(id);
           if (isChecked) {
             panelState[stateKey] = panelState[stateKey].filter((x) => x !== id);
@@ -1539,7 +1673,7 @@ html[data-aa-panel-open="1"] {
     setupCheckList("aa-repeat-list", "repeatServices");
     setupCheckList("aa-declined-list", "declinedServices");
 
-    document.getElementById("aa-customer-notes").addEventListener("input", (e) => {
+    uiId("aa-customer-notes").addEventListener("input", (e) => {
       panelState.customerNotes = e.target.value;
       persistPanelState();
       refreshPurposePreview(roData);
@@ -1547,7 +1681,7 @@ html[data-aa-panel-open="1"] {
 
     bindOpenSchedulerButtons(panelState.appointment.date);
 
-    document.getElementById("aa-continue-to-confirm-btn").onclick = () => {
+    uiId("aa-continue-to-confirm-btn").onclick = () => {
       panelState.screen = 3;
       panelState.isConfirmed = false;
       panelState.scheduledAppointmentId = null;
@@ -1593,13 +1727,13 @@ html[data-aa-panel-open="1"] {
   }
 
   function refreshPurposePreview(roData) {
-    const preview = document.getElementById("aa-purpose-preview");
+    const preview = uiId("aa-purpose-preview");
     if (preview) preview.textContent = buildPurposeOfVisit(roData) || "No details selected.";
   }
 
   async function scheduleAppointment(panel) {
-    const confirmBtn = document.getElementById("aa-confirm-btn");
-    const errorEl = document.getElementById("aa-s3-error");
+    const confirmBtn = uiId("aa-confirm-btn");
+    const errorEl = uiId("aa-s3-error");
     if (confirmBtn) {
       confirmBtn.disabled = true;
       confirmBtn.textContent = "Confirming…";
@@ -1616,10 +1750,9 @@ html[data-aa-panel-open="1"] {
       const endTime = new Date(selectedDate);
       endTime.setHours(selectedHour + 1, 0, 0, 0);
 
-      const response = await fetch(`${CLOUD_RUN_URL}/appointments`, {
+      const result = await cloudRunFetch("/appointments", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: {
           shopId: ro.shopId,
           customerId: ro.customer.id,
           vehicleId: ro.vehicle.id,
@@ -1630,11 +1763,10 @@ html[data-aa-panel-open="1"] {
           endTime: endTime.toISOString(),
           mileage: panelState.appointment.mileage,
           color: panelState.appointment.color
-        })
+        }
       });
 
-      const result = await response.json();
-      if (!response.ok || !result.success) throw new Error(result.message || "Scheduling failed");
+      if (!result || result.success === false) throw new Error(result?.message || "Scheduling failed");
 
       const appointmentId = result.appointment?.data ?? result.appointment?.id ?? "—";
       panelState.scheduledAppointmentId = String(appointmentId);
@@ -1656,6 +1788,7 @@ html[data-aa-panel-open="1"] {
   function renderScreen3(panel) {
     panelState.screen = 3;
     const ro = panelState.roData;
+
     const startTime = panelState.scheduledStartTime
       ? new Date(panelState.scheduledStartTime)
       : (() => {
@@ -1675,8 +1808,9 @@ html[data-aa-panel-open="1"] {
       ${stepsHTML(3)}
       <div class="aa-scroll">
         <div class="aa-content">
-
-          ${panelState.isConfirmed ? `
+          ${
+            panelState.isConfirmed
+              ? `
             <div class="aa-confirmed-card aa-animate-in">
               <div class="aa-confirmed-check">
                 <svg viewBox="0 0 18 18" fill="none"><path d="M4 9l3.5 3.5L14 5" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1684,7 +1818,9 @@ html[data-aa-panel-open="1"] {
               <div class="aa-confirmed-title">Appointment Confirmed</div>
               <div class="aa-confirmed-id">ID: ${panelState.scheduledAppointmentId || "—"}</div>
             </div>
-          ` : ""}
+          `
+              : ""
+          }
 
           <div class="aa-section" style="margin-top:${panelState.isConfirmed ? "16px" : "0"};">
             <div class="aa-section-label">Summary</div>
@@ -1697,11 +1833,15 @@ html[data-aa-panel-open="1"] {
                 <span class="aa-detail-key">Time</span>
                 <span class="aa-detail-val">${formatTime(startTime)}</span>
               </div>
-              ${panelState.appointment.mileage ? `
+              ${
+                panelState.appointment.mileage
+                  ? `
               <div class="aa-detail-row">
                 <span class="aa-detail-key">Est. Mileage</span>
                 <span class="aa-detail-val">${formatMiles(panelState.appointment.mileage)} mi</span>
-              </div>` : ""}
+              </div>`
+                  : ""
+              }
               <div class="aa-detail-row">
                 <span class="aa-detail-key">Type</span>
                 <span class="aa-detail-val">${panelState.appointment.type === "wait" ? "Waiter" : "Drop-Off"}</span>
@@ -1709,11 +1849,15 @@ html[data-aa-panel-open="1"] {
             </div>
           </div>
 
-          ${purposeText !== "No details selected." ? `
+          ${
+            purposeText !== "No details selected."
+              ? `
           <div class="aa-section">
             <div class="aa-section-label">Purpose of Visit</div>
             <div class="aa-preview-box">${purposeText}</div>
-          </div>` : ""}
+          </div>`
+              : ""
+          }
 
           <div class="aa-section">
             <div class="aa-section-label">Calendar Color</div>
@@ -1725,24 +1869,26 @@ html[data-aa-panel-open="1"] {
       </div>
       <div class="aa-footer">
         ${schedulerFooterButtonHTML()}
-        ${panelState.isConfirmed
-          ? `<button class="aa-btn-link" id="aa-view-mini-btn">View in Scheduler →</button>
-             <button class="aa-btn-primary" id="aa-done-btn">Done</button>`
-          : `<button class="aa-btn-primary" id="aa-confirm-btn">Confirm Appointment</button>`
+        ${
+          panelState.isConfirmed
+            ? `<button class="aa-btn-link" id="aa-view-mini-btn">View in Scheduler →</button>
+               <button class="aa-btn-primary" id="aa-done-btn">Done</button>`
+            : `<button class="aa-btn-primary" id="aa-confirm-btn">Confirm Appointment</button>`
         }
       </div>
     `;
 
-    document.getElementById("aa-close-btn").onclick = hidePanel;
-    if (!panelState.isConfirmed && document.getElementById("aa-back-btn")) {
-      document.getElementById("aa-back-btn").onclick = () => {
+    bindHeaderControls();
+
+    if (!panelState.isConfirmed && uiId("aa-back-btn")) {
+      uiId("aa-back-btn").onclick = () => {
         panelState.screen = 2;
         persistPanelState();
         renderScreen2(panel);
       };
     }
 
-    const colorGrid = document.getElementById("aa-color-grid");
+    const colorGrid = uiId("aa-color-grid");
     TEKMETRIC_COLORS.forEach((name) => {
       const btn = document.createElement("button");
       btn.className = `aa-color-btn ${panelState.appointment.color === name ? "active" : ""}`;
@@ -1758,10 +1904,10 @@ html[data-aa-panel-open="1"] {
     bindOpenSchedulerButtons(panelState.scheduledStartTime || startTime);
 
     if (!panelState.isConfirmed) {
-      document.getElementById("aa-confirm-btn").onclick = () => scheduleAppointment(panel);
+      uiId("aa-confirm-btn").onclick = () => scheduleAppointment(panel);
     } else {
-      document.getElementById("aa-done-btn").onclick = hidePanel;
-      document.getElementById("aa-view-mini-btn").onclick = () => {
+      uiId("aa-done-btn").onclick = hidePanel;
+      uiId("aa-view-mini-btn").onclick = () => {
         openFullScheduler(panelState.scheduledStartTime || startTime);
       };
     }
@@ -1769,41 +1915,37 @@ html[data-aa-panel-open="1"] {
     persistPanelState();
   }
 
-  function setPanelOpenPersisted(isOpen) {
-    try {
-      window.localStorage.setItem(PANEL_OPEN_STORAGE_KEY, isOpen ? "1" : "0");
-    } catch {}
-  }
-
-  function isPanelOpenPersisted() {
-    try {
-      return window.localStorage.getItem(PANEL_OPEN_STORAGE_KEY) === "1";
-    } catch {
-      return false;
-    }
-  }
-
+  // ----------------------------
+  // Scheduler link
+  // ----------------------------
   function openFullScheduler(dateOverride) {
     if (!panelState.roData?.shopId) return;
+
     setPanelOpenPersisted(true);
     persistPanelState();
-    const panel = document.getElementById(PANEL_ID);
-    if (panel) panel.classList.add("aa-launching");
+
+    const host = panelHostEl || docId(PANEL_ID);
+    if (host) host.classList.add("aa-launching");
+
     const schedulerUrl = new URL(`/admin/shop/${panelState.roData.shopId}/appointments`, window.location.origin);
     const selectedDate = dateOverride || panelState.scheduledStartTime || panelState.appointment.date || new Date();
+
     schedulerUrl.searchParams.set("date", new Date(selectedDate).toISOString());
     if (panelState.sourceRoId) schedulerUrl.searchParams.set(RO_ID_QUERY_PARAM, panelState.sourceRoId);
+
     window.open(schedulerUrl.toString(), "_blank", "noopener,noreferrer");
-    setTimeout(() => panel?.classList.remove("aa-launching"), 260);
+    setTimeout(() => host?.classList.remove("aa-launching"), 260);
   }
 
-  function updateLayoutForPanel() {
-    if (!panelMounted) return;
-    setPanelTopOffset();
-    resetShift();
-    applyShift();
-    nudgeSidebarOpenersForPanel();
-  }
+  // ----------------------------
+// Dock layout application (DOCK ONLY)
+// ----------------------------
+function updateLayoutForPanel() {
+  if (!panelMounted) return;
+
+  setPanelTopOffset();
+  applyModeLayout();
+}
 
   function attachLayoutWatchers() {
     if (layoutWatchersAttached) return;
@@ -1819,21 +1961,61 @@ html[data-aa-panel-open="1"] {
     layoutWatchersAttached = false;
   }
 
+  // ----------------------------
+  // Open/close persistence
+  // ----------------------------
+  function setPanelOpenPersisted(isOpen) {
+    try {
+      window.localStorage.setItem(PANEL_OPEN_STORAGE_KEY, isOpen ? "1" : "0");
+    } catch {}
+  }
+
+  function isPanelOpenPersisted() {
+    try {
+      return window.localStorage.getItem(PANEL_OPEN_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  // ----------------------------
+  // Create / show / hide
+  // ----------------------------
   async function createPanel() {
-    if (document.getElementById(PANEL_ID)) return;
+    if (docId(PANEL_ID)) return;
 
-    const panel = document.createElement("div");
-    panel.id = PANEL_ID;
-    document.body.appendChild(panel);
+    // Build host
+    const host = document.createElement("div");
+    host.id = PANEL_ID;
+    host.dataset.aaMode = "dock";    
+    document.body.appendChild(host);
+
+    panelHostEl = host;
+    panelShadow = host.attachShadow({ mode: "open" });
+
+    // Root container inside shadow
+    const root = document.createElement("div");
+    root.id = "aa-shadow-root";
+    panelShadow.appendChild(root);
+    panelRootEl = root;
+
     panelMounted = true;
-    updateLayoutForPanel();
-    requestAnimationFrame(() => requestAnimationFrame(() => panel.classList.add("aa-visible")));
 
-    panel.innerHTML = `
-      ${headerHTML({ title: "Advance Appointment Scheduler", subtitle: "Loading…", showBack: false })}
-      <div class="aa-scroll"><div class="aa-content"><div class="aa-hint-text">Loading repair order…</div></div></div>
+    // Styles
+    injectGlobalStyles();
+    injectShadowStyles();
+
+    // Layout + animate
+    updateLayoutForPanel();
+    requestAnimationFrame(() => requestAnimationFrame(() => host.classList.add("aa-visible")));
+
+    // Initial content (with grip + header)
+    panelRootEl.innerHTML = `
+     ${headerHTML({ title: "Advance Appointment Scheduler", subtitle: "Loading…", showBack: false })}
+     <div class="aa-scroll"><div class="aa-content"><div class="aa-hint-text">Loading repair order…</div></div></div>
     `;
-    document.getElementById("aa-close-btn").onclick = hidePanel;
+
+    bindHeaderControls();
 
     const roId = getRoIdFromUrl() || getRoIdFromSchedulerQuery() || panelState.sourceRoId;
 
@@ -1843,17 +2025,16 @@ html[data-aa-panel-open="1"] {
           const data = await fetchRoData(roId);
           if (!data || data.success === false) throw new Error("Invalid API response");
           panelState.roData = data;
+
           try {
-            const history = await fetchVehicleHistory(
-              panelState.roData.vehicle.id,
-              panelState.roData.shopId
-            );
+            const history = await fetchVehicleHistory(panelState.roData.vehicle.id, panelState.roData.shopId);
             panelState.vehicleAvgMilesPerDay = history.avgMilesPerDay ?? null;
             panelState.vehicleDataPointCount = history.dataPointCount ?? 0;
             panelState.vehicleHistorySpanDays = history.historySpanDays ?? null;
           } catch (err) {
-            console.warn("Vehicle history failed:", err.message);
+            console.warn("Vehicle history failed:", err?.message || err);
           }
+
           panelState.sourceRoId = String(roId);
         } catch (err) {
           if (!panelState.roData) throw err;
@@ -1861,50 +2042,73 @@ html[data-aa-panel-open="1"] {
       } else if (!panelState.roData) {
         throw new Error("No RO context available");
       }
-      renderCurrentScreen(panel);
+
+      renderCurrentScreen(panelRootEl);
+
+      
+
       updateLayoutForPanel();
+      bindHeaderControls();
     } catch {
-      panel.innerHTML = `
+      panelRootEl.innerHTML = `
+        <div class="aa-grip" id="${OVERLAY_GRIP_ID}" title="Close">⋮</div>
         ${headerHTML({ title: "Advance Appointment Scheduler", subtitle: null, showBack: false })}
         <div class="aa-scroll"><div class="aa-content">
           <div class="aa-error-banner" style="margin-top:8px;">Failed to load repair order data. Open a repair order and try again.</div>
         </div></div>
+        <div id="${OVERLAY_RESIZE_ID}" title="Resize"></div>
       `;
-      document.getElementById("aa-close-btn").onclick = hidePanel;
+      bindHeaderControls();
     }
   }
 
   function showPanel() {
-    setPanelOpenPersisted(true);
-    restorePanelState();
-    injectStyles();
-    attachLayoutWatchers();
-    createPanel();
-  }
+  setPanelOpenPersisted(true);
+  restorePanelState();
+  injectGlobalStyles();
+  attachLayoutWatchers();
+  createPanel();
+  setPageGlow(true);
+}
 
   function hidePanel() {
     setPanelOpenPersisted(false);
+    setPageGlow(false);
     clearPersistedPanelState();
 
-    const panel = document.getElementById(PANEL_ID);
+    const panel = panelHostEl || docId(PANEL_ID);
     if (!panel) return;
+
     panel.classList.remove("aa-visible");
     setTimeout(() => {
       panel.remove();
+
       panelMounted = false;
       panelState = getDefaultPanelState();
+
       restoreSidebarOpeners();
       resetShift();
       detachLayoutWatchers();
+
+      
+
+      panelHostEl = null;
+      panelShadow = null;
+      panelRootEl = null;
     }, PANEL_MOTION_MS);
   }
 
+  // ----------------------------
+  // Public API
+  // ----------------------------
   window.AA.showPanel = showPanel;
   window.AA.hidePanel = hidePanel;
   window.AA.isPanelMounted = () => panelMounted;
 
+  // Auto-open if persisted
   if (isPanelOpenPersisted()) showPanel();
 
+  // Legacy no-ops
   window.AA.initLayoutWatcher = function () {};
   window.AA.initRouteWatcher = function () {};
 })();
