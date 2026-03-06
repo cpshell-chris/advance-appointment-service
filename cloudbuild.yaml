@@ -1,0 +1,29 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      [
+        'build',
+        '-f', 'backend/Dockerfile',
+        '-t', 'us-east4-docker.pkg.dev/$PROJECT_ID/advance-appointment-service/advance-appointment-service:$COMMIT_SHA',
+        'backend'
+      ]
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      [
+        'push',
+        'us-east4-docker.pkg.dev/$PROJECT_ID/advance-appointment-service/advance-appointment-service:$COMMIT_SHA'
+      ]
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      [
+        'run', 'deploy', 'advance-appointment-service',
+        '--image', 'us-east4-docker.pkg.dev/$PROJECT_ID/advance-appointment-service/advance-appointment-service:$COMMIT_SHA',
+        '--region', 'us-east4',
+        '--platform', 'managed'
+      ]
+
+images:
+  - 'us-east4-docker.pkg.dev/$PROJECT_ID/advance-appointment-service/advance-appointment-service:$COMMIT_SHA'
