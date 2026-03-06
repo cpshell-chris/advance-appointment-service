@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Advance Appointment Sidebar",
-  "version": "0.3.0",
-  "description": "Shows a 6-month advance appointment sidebar on Tekmetric payment screen.",
-  "permissions": ["storage"],
+  "version": "0.4.0",
+  "description": "Opens an Advance Appointment Scheduler in the Chrome side panel for Tekmetric.",
+  "permissions": ["storage", "sidePanel", "tabs"],
   "host_permissions": [
     "https://shop.tekmetric.com/*",
     "https://sandbox.tekmetric.com/*",
@@ -12,17 +12,16 @@
   "background": {
     "service_worker": "src/background/background.js"
   },
+  "action": {
+    "default_title": "Advance Appointment Scheduler"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/sidepanel.html"
+  },
   "content_scripts": [
     {
-      "matches": [
-        "https://shop.tekmetric.com/*",
-        "https://sandbox.tekmetric.com/*"
-      ],
-      "js": [
-        "src/panel/panel.js",
-        "src/content/routeWatcher.js",
-        "src/content/content.js"
-      ],
+      "matches": ["https://shop.tekmetric.com/*", "https://sandbox.tekmetric.com/*"],
+      "js": ["src/panel/panel.js", "src/content/routeWatcher.js", "src/content/content.js"],
       "run_at": "document_idle"
     }
   ]

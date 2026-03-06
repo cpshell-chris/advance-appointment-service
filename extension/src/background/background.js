@@ -4,6 +4,8 @@
 const CLOUD_RUN_BASE =
   "https://advance-appointment-service-361478515851.us-east4.run.app";
 
+  let lastSidePanelTabId = null;
+
 function isAllowedUrl(url) {
   try {
     const u = new URL(url);
@@ -28,6 +30,12 @@ async function safeReadBody(res) {
     return null;
   }
 }
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.sidePanel
+    .setOptions({ path: "src/sidepanel/sidepanel.html", enabled: true })
+    .catch(() => {});
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.__aa !== true) return;
@@ -97,6 +105,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+    // Close Chrome side panel (requested by sidepanel UI)
+if (message.type === "CLOSE_SIDE_PANEL") {
+  (async () => {
+    try {
+      const tabId = sender?.tab?.id || lastSidePanelTabId;
+      if (!tabId) {
+        sendResponse({ ok: false, error: "No tabId available to close side panel" });
+        return;
+      }
+
+      await chrome.sidePanel.close({ tabId });
+      sendResponse({ ok: true });
+    } catch (err) {
+      sendResponse({ ok: false, error: err?.message || "Failed to close side panel" });
+    }
+  })();
+
+  return true;
+}
+  // Open the Chrome side panel for the current tab (must be user-gesture initiated)
+  if (message.type === "OPEN_SIDE_PANEL") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    lastSidePanelTabId = tabId;
+
+    if (!tabId) {
+      sendResponse({ ok: false, status: 0, error: "No sender tab to open side panel for." });
+      return false;
+    }
+
+    chrome.sidePanel.open({ tabId }).then(
+      () => sendResponse({ ok: true, status: 200 }),
+      (err) =>
+        sendResponse({
+          ok: false,
+          status: 0,
+          error: err?.message || String(err || "Failed to open side panel")
+        })
+    );
+
+    return true; // async response
+  }
   sendResponse({ ok: false, status: 0, error: "Unknown message type" });
   return false;
 });
