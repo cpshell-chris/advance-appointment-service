@@ -162,6 +162,33 @@ function tekmetricGet(token, path) {
   return tekmetricRequest(token, "GET", path);
 }
 
+function formatCustomerName(customer) {
+  if (!customer || typeof customer !== "object") return "";
+
+  const first = typeof customer.firstName === "string" ? customer.firstName.trim() : "";
+  const last = typeof customer.lastName === "string" ? customer.lastName.trim() : "";
+  const full = [first, last].filter(Boolean).join(" ").trim();
+
+  if (full) return full;
+  if (typeof customer.name === "string") return customer.name.trim();
+  if (typeof customer.displayName === "string") return customer.displayName.trim();
+  return "";
+}
+
+function formatVehicleLabel(vehicle) {
+  if (!vehicle || typeof vehicle !== "object") return "";
+
+  const year = vehicle.year != null ? String(vehicle.year).trim() : "";
+  const make = typeof vehicle.make === "string" ? vehicle.make.trim() : "";
+  const model = typeof vehicle.model === "string" ? vehicle.model.trim() : "";
+  const subModel = typeof vehicle.subModel === "string" ? vehicle.subModel.trim() : "";
+  const label = [year, make, model, subModel].filter(Boolean).join(" ").trim();
+
+  if (label) return label;
+  if (typeof vehicle.name === "string") return vehicle.name.trim();
+  return "";
+}
+
 /* ============================
    Job / RO Helpers
 ============================ */
@@ -413,24 +440,83 @@ app.get("/ro-search", async (req, res) => {
 
     const rows = Array.isArray(payload?.content) ? payload.content : [];
 
+    const customerIds = [...new Set(
+      rows
+        .map((ro) => ro?.customerId)
+        .filter((id) => id != null)
+        .map((id) => String(id))
+    )];
+
+    const vehicleIds = [...new Set(
+      rows
+        .map((ro) => ro?.vehicleId)
+        .filter((id) => id != null)
+        .map((id) => String(id))
+    )];
+
+    const customerMap = new Map();
+    const vehicleMap = new Map();
+
+    await Promise.all([
+      Promise.all(customerIds.map(async (customerId) => {
+        try {
+          const customer = await tekmetricGet(
+            token,
+            `/api/v1/customers/${encodeURIComponent(customerId)}`
+          );
+          customerMap.set(customerId, customer);
+        } catch (err) {
+          console.warn(`/ro-search customer lookup failed (${customerId}):`, err.message);
+        }
+      })),
+      Promise.all(vehicleIds.map(async (vehicleId) => {
+        try {
+          const vehicle = await tekmetricGet(
+            token,
+            `/api/v1/vehicles/${encodeURIComponent(vehicleId)}`
+          );
+          vehicleMap.set(vehicleId, vehicle);
+        } catch (err) {
+          console.warn(`/ro-search vehicle lookup failed (${vehicleId}):`, err.message);
+        }
+      }))
+    ]);
+
     // Return a slim shape for the UI
-    const items = rows.map((ro) => ({
+    const items = rows.map((ro) => {
+      const customer = customerMap.get(String(ro.customerId));
+      const vehicleData = vehicleMap.get(String(ro.vehicleId));
+      const customerName =
+        formatCustomerName(customer) ||
+        (typeof ro.customerName === "string" ? ro.customerName.trim() : "") ||
+        (typeof ro.customer === "string" ? ro.customer.trim() : "");
+
+      const vehicle =
+        formatVehicleLabel(vehicleData) ||
+        (typeof ro.vehicle === "string" ? ro.vehicle.trim() : "") ||
+        (typeof ro.vehicleLabel === "string" ? ro.vehicleLabel.trim() : "");
+
+      return {
       id: ro.id,
       roNumber: ro.repairOrderNumber,
       statusId: ro.repairOrderStatus?.id ?? null,
       statusName: ro.repairOrderStatus?.name ?? "",
+      status: ro.repairOrderStatus?.name ?? "",
+      customerName,
+      vehicle,
       customerId: ro.customerId ?? null,
       vehicleId: ro.vehicleId ?? null,
       milesIn: ro.milesIn ?? null,
       milesOut: ro.milesOut ?? null,
       createdDate: ro.createdDate ?? null,
       updatedDate: ro.updatedDate ?? null
-    }));
+    };
+    });
 
     return res.json({
       success: true,
       items,
-      page: payload?.number ?? Number(page) || 0,
+      page: payload?.number ?? (Number(page) || 0),
       totalPages: payload?.totalPages ?? 0,
       totalElements: payload?.totalElements ?? items.length,
       last: payload?.last ?? true
