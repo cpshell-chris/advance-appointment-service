@@ -1181,80 +1181,97 @@ function nextRenderToken() {
   }
 
     function renderSearchScreen(rootEl) {
-    if (!rootEl) return;
+  if (!rootEl) return;
 
-    // We need a shopId to search within the current shop only.
-    const shopId = cachedContext?.shopId || panelState?.roData?.shopId || null;
+  const shopId = cachedContext?.shopId || panelState?.roData?.shopId || null;
 
-    rootEl.innerHTML = `
-      ${headerHTML({
-        title: "Search Repair Orders",
-        subtitle: shopId ? `Shop #${shopId} · OPEN (Estimate/WIP/Complete)` : "Missing shop context",
-        showBack: false
-      })}
-      <div class="aa-scroll">
-        <div class="aa-content">
-          <div class="aa-section">
-            <div class="aa-section-label">Search</div>
-            <input
-              id="aa-search-input"
-              class="aa-textarea"
-              style="min-height:unset;height:40px;resize:none;"
-              placeholder="Search by RO #, customer, or vehicle…"
-              value="${escapeHtml(searchState.query)}"
-            />
-            <div class="aa-hint-text" style="margin-top:8px;">
-              Searching OPEN only: Estimate, Work-in-Progress, Complete (not posted)
-            </div>
+  rootEl.innerHTML = `
+    ${headerHTML({
+      title: "Search Repair Orders",
+      subtitle: shopId ? `Shop #${shopId} · OPEN (Estimate/WIP/Complete)` : "Missing shop context",
+      showBack: false
+    })}
+    <div class="aa-scroll">
+      <div class="aa-content">
+        <div class="aa-section">
+          <div class="aa-section-label">Search</div>
+          <input
+            id="aa-search-input"
+            class="aa-textarea"
+            style="min-height:unset;height:40px;resize:none;"
+            placeholder="Search by RO #, customer, or vehicle…"
+            value="${escapeHtml(searchState.query)}"
+          />
+          <div class="aa-hint-text" style="margin-top:8px;">
+            Searching OPEN only: Estimate, Work-in-Progress, Complete (not posted)
           </div>
-
-          ${
-            !shopId
-              ? `<div class="aa-error-banner">Can’t search yet — shopId is missing. Open any RO first.</div>`
-              : searchState.error
-                ? `<div class="aa-error-banner">${escapeHtml(searchState.error)}</div>`
-                : ""
-          }
-
-          ${
-            searchState.loading
-              ? `<div class="aa-hint-text">Searching…</div>`
-              : ""
-          }
-
-          <div id="aa-search-results"></div>
         </div>
+
+        <div id="aa-search-status"></div>
+        <div id="aa-search-results"></div>
       </div>
-      <div class="aa-footer">
-        <button class="aa-btn-secondary" id="aa-search-cancel-btn">Back to Scheduler</button>
-      </div>
-    `;
+    </div>
+    <div class="aa-footer">
+      <button class="aa-btn-secondary" id="aa-search-cancel-btn">Back to Scheduler</button>
+    </div>
+  `;
 
-    // Wire input + debounce search
-    const input = uiId("aa-search-input");
-    if (input) {
-      input.focus();
-      input.addEventListener("input", (e) => {
-        searchState.query = e.target.value || "";
-        if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-        searchDebounceTimer = setTimeout(() => {
-          void runSearch();
-        }, SEARCH_DEBOUNCE_MS);
-      });
-    }
+  const input = uiId("aa-search-input");
+  if (input) {
+    input.focus();
+    try {
+      const len = input.value.length;
+      input.setSelectionRange(len, len);
+    } catch {}
 
-    // Back button -> return to wizard
-    const cancelBtn = uiId("aa-search-cancel-btn");
-    if (cancelBtn) {
-      cancelBtn.onclick = () => {
-        uiMode = "wizard";
-        renderCurrentScreen(rootElRef);
-      };
-    }
+    input.addEventListener("input", (e) => {
+      searchState.query = e.target.value || "";
 
-    // Initial render of results (possibly empty)
-    renderSearchResults(rootEl);
+      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+
+      updateSearchStatus();
+
+      searchDebounceTimer = setTimeout(() => {
+        void runSearch();
+      }, SEARCH_DEBOUNCE_MS);
+    });
   }
+
+  const cancelBtn = uiId("aa-search-cancel-btn");
+  if (cancelBtn) {
+    cancelBtn.onclick = () => {
+      uiMode = "wizard";
+      renderCurrentScreen(rootElRef);
+    };
+  }
+
+  updateSearchStatus();
+  renderSearchResults(rootEl);
+}
+
+function updateSearchStatus() {
+  const statusEl = uiId("aa-search-status");
+  if (!statusEl) return;
+
+  const shopId = cachedContext?.shopId || panelState?.roData?.shopId || null;
+
+  if (!shopId) {
+    statusEl.innerHTML = `<div class="aa-error-banner">Can’t search yet — shopId is missing. Open any RO first.</div>`;
+    return;
+  }
+
+  if (searchState.error) {
+    statusEl.innerHTML = `<div class="aa-error-banner">${escapeHtml(searchState.error)}</div>`;
+    return;
+  }
+
+  if (searchState.loading) {
+    statusEl.innerHTML = `<div class="aa-hint-text">Searching…</div>`;
+    return;
+  }
+
+  statusEl.innerHTML = "";
+}
 
   function renderSearchResults(rootEl) {
     const container = uiId("aa-search-results");
@@ -1318,43 +1335,49 @@ function nextRenderToken() {
   }
 
   async function runSearch() {
-    const shopId = cachedContext?.shopId || panelState?.roData?.shopId || null;
-    const q = (searchState.query || "").trim();
+  const shopId = cachedContext?.shopId || panelState?.roData?.shopId || null;
+  const q = (searchState.query || "").trim();
 
-    if (!shopId) return;
-    if (!q) {
-      searchState.results = [];
-      searchState.error = "";
-      searchState.loading = false;
-      renderSearchScreen(rootElRef);
-      return;
-    }
+  if (!shopId) return;
 
-    searchState.loading = true;
+  if (!q) {
+    searchState.results = [];
     searchState.error = "";
-    renderSearchScreen(rootElRef);
-
-    try {
-      const payload = await searchOpenRepairOrders(shopId, q);
-
-      // normalize results from your Cloud Run response shape
-            const rows =
-        payload.items ||
-        payload.results ||
-        payload.content ||
-        payload.repairOrders ||
-        payload.data ||
-        [];
-
-      searchState.results = Array.isArray(rows) ? rows : [];
-      searchState.loading = false;
-      renderSearchScreen(rootElRef);
-    } catch (err) {
-      searchState.loading = false;
-      searchState.error = err?.message || "Search failed";
-      renderSearchScreen(rootElRef);
-    }
+    searchState.loading = false;
+    updateSearchStatus();
+    renderSearchResults(rootElRef);
+    return;
   }
+
+  searchState.loading = true;
+  searchState.error = "";
+  updateSearchStatus();
+  renderSearchResults(rootElRef);
+
+  try {
+    const payload = await searchOpenRepairOrders(shopId, q);
+
+    const rows =
+      payload.items ||
+      payload.results ||
+      payload.content ||
+      payload.repairOrders ||
+      payload.data ||
+      [];
+
+    searchState.results = Array.isArray(rows) ? rows : [];
+    searchState.loading = false;
+    searchState.error = "";
+    updateSearchStatus();
+    renderSearchResults(rootElRef);
+  } catch (err) {
+    searchState.loading = false;
+    searchState.error = err?.message || "Search failed";
+    searchState.results = [];
+    updateSearchStatus();
+    renderSearchResults(rootElRef);
+  }
+}
 
   // tiny helper to prevent HTML injection in templates
   function escapeHtml(s) {

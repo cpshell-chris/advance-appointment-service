@@ -354,8 +354,6 @@ async function fetchAppointmentsForRange(token, shopId, startDate, endDate) {
         `/api/v1/appointments?${params.toString()}`
       );
 
-      console.log("DEPLOY TEST 2026-03-06 14:10");
-
       const list = getAppointmentsFromResponse(payload);
       if (list.length === 0) break;
 
