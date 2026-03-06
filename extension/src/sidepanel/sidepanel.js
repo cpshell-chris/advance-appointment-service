@@ -269,16 +269,16 @@ function nextRenderToken() {
     if (!data || data.success === false) throw new Error("Failed to fetch vehicle history");
     return data;
   }
-  // Search OPEN repair orders (Estimate/WIP/Complete-not-posted)
-  // NOTE: adjust path here if your Cloud Run route name differs.
+    // Search OPEN repair orders (Estimate/WIP/Complete)
   async function searchOpenRepairOrders(shopId, searchText) {
     const params = new URLSearchParams({
       shopId: String(shopId),
-      search: String(searchText || "").trim(),
-      statusIds: OPEN_RO_STATUS_IDS.join(",")
+      q: String(searchText || "").trim(),
+      page: "0",
+      size: "20"
     });
 
-    const data = await cloudRunFetch(`/repair-orders/search?${params.toString()}`);
+    const data = await cloudRunFetch(`/ro-search?${params.toString()}`);
     if (!data || data.success === false) throw new Error(data?.message || "Search failed");
     return data;
   }
@@ -1338,7 +1338,8 @@ function nextRenderToken() {
       const payload = await searchOpenRepairOrders(shopId, q);
 
       // normalize results from your Cloud Run response shape
-      const rows =
+            const rows =
+        payload.items ||
         payload.results ||
         payload.content ||
         payload.repairOrders ||
